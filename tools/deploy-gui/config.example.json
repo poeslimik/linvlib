@@ -1,0 +1,11 @@
+{
+  "repo_dir": "C:\\Users\\YOU\\Documents\\GitHub\\linvlib",
+  "ssh_key": "C:\\Users\\YOU\\.ssh\\your-key.key",
+  "ssh_host": "YOUR_SERVER_IP",
+  "ssh_user": "ubuntu",
+  "remote_dir": "~/linvlib",
+  "service_name": "linvlib",
+  "wsl_distro": "Ubuntu",
+  "bind": "127.0.0.1",
+  "port": 8765
+}

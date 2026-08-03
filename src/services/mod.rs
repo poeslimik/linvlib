@@ -1,0 +1,13 @@
+pub mod aladin;
+pub mod backup;
+pub mod catalog_edit;
+pub mod catalog_requests;
+pub mod email;
+pub mod manual;
+pub mod quota;
+pub mod rate_limit;
+pub mod scheduler;
+pub mod search;
+pub mod series;
+pub mod tierlist;
+pub mod title_rules;

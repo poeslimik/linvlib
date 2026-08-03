@@ -1,0 +1,23 @@
+# Build
+/target
+**/*.rs.bk
+*.pdb
+
+# Environment and local database
+.env
+linvlib.db
+linvlib.db-*
+*.db
+*.db-shm
+*.db-wal
+/backups/
+
+# Local deploy GUI secrets
+tools/deploy-gui/config.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Frontend tooling (if added later)
+node_modules/

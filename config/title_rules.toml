@@ -1,0 +1,221 @@
+# linvlib 제목/시리즈 정규화·가져오기 규칙
+# 일반 규칙은 전 작품에 적용. 작품별 예외는 [[series_overrides]]에만 둔다.
+# 후속권이 나와도 권번호를 하드코딩하지 말고 패턴/플래그로 처리한다.
+
+[bundle]
+contains = ["합본", "세트", " + "]
+contains_ci = ["bundle"]
+
+[limited_edition]
+contains = [
+  "특별판",
+  "특별한정",
+  "소책자 포함",
+  "소책자 부속",
+  "①",
+  "전용 슬리브",
+  "전용 커버",
+  "크리스마스 에디션",
+  "크리스마스에디션",
+]
+patterns = [
+  '\(한정판\)',
+  '\(초회판\)',
+  '\(특장판\)',
+  '\(특별판\)',
+  '달력\s*한정',
+  '한정\s*박스',
+  '박스\s*한정',
+  '\([^)]*한정[^)]*판[^)]*\)',
+  '\([^)]*박스판[^)]*\)',
+  '\([^)]*특별[^)]*\)',
+  '(?i)christmas\s*edition',
+  '(?i)\b(?:xmas|christmas)\s*에디션',
+]
+
+[imprint]
+edition_paren = '\s*\([^)]*(?:한정|초회|박스|특장|특별|일반|소책자)[^)]*\)'
+special_edition_tail = '\s*특별판\b.*$'
+label_patterns = [
+  '(?i)\s*[-–,]\s*Premium\s+Extreme\s+Novel\b.*$',
+  '(?i)\s*[-–,]\s*Extreme\s+Novel\b.*$',
+  '(?i)\s*[-–,]\s*Novel\s*Engine\b.*$',
+  '(?i)\s*[-–,]\s*NT\s*Novel\b.*$',
+  '(?i)\s*[-–,]\s*S\s*Novel\+?(?:\s*초판.*)?$',
+  '(?i)\s*[-–,]\s*L\s*Novel\b.*$',
+  '(?i)\s*[-–,]\s*L\s*Books\b.*$',
+  '(?i)\s*[-–,]\s*JM\s*노벨\b.*$',
+  '(?i)\s*[-–,]\s*S노블레스\b.*$',
+  '(?i)\s*[-–,]\s*V\+\b.*$',
+  '(?i)\s*[-–,]\s*[^,-]{0,40}Novel\+?\b.*$',
+  '(?i)\s*[-–,]\s*[^,-]{0,40}노벨\b.*$',
+  '(?i)\s*[-–,/]\s*완결(?:\s*/.*)?\s*$',
+  '(?i)\s*,\s*완결\s*$',
+  '(?i)\s*,\s*V\+\s*$',
+  '(?i)\s*/\s*초판\s*한정.*$',
+  '(?i)\s*,\s*특가\s*$',
+  '\s*[,，]?\s*[①②③④⑤].*$',
+]
+
+[clean]
+edition_paren = '\s*\([^)]*(?:한정|초회|박스|특장|특별|일반)[^)]*\)\s*'
+xmas_ko = '(?i)\s*[:：]?\s*크리스마스\s*에디션\b'
+xmas_en = '(?i)\s*[:：]?\s*(?:xmas|christmas)\s*edition\b'
+
+[normalize]
+school_year_strip = '\s*\d+학년\s*편\s*'
+# 팬북/가이드북이 아닐 때만 적용 (제N부 본편 합류)
+story_part_strip = '\s*제\d+부(?:\s*[:：]\s*|\s+).*'
+chapter_subtitle_strip = '\s*[:：]\s*.+의\s*장\s*$'
+volume_strip_patterns = [
+  # 09 (상) / 9권(하) / 09 상
+  '(?i)\s*제?\s*\d+(?:\.\d+)?\s*권?\s*[\(（]\s*(?:상|중|하)\s*[\)）](?:\s*[-–—:].*)?$',
+  '(?i)\s*제?\s*\d+(?:\.\d+)?\s*권?\s*[-–—:\s]+(?:상|중|하)(?:\s*[-–—:].*)?$',
+  '(?i)\s*제?\s*\d+(?:\.\d+)?\s*(?:상|중|하)\s*$',
+  '(?i)\s*제?\s*\d+(?:\.\d+)?\s*권?\s*[-–—:].*$',
+  '(?i)\s*vol\.?\s*\d+(?:\.\d+)?\s*[-–—:].*$',
+  '(?i)\s*제?\s*\d+(?:\.\d+)?\s*권\s*$',
+  '(?i)\s*vol\.?\s*\d+(?:\.\d+)?\s*$',
+  '\s+\d+(?:\.\d+)?\s*$',
+  '\.\s*\d+(?:\.\d+)?\s*$',
+]
+fanbook_markers = ["팬북", "가이드북"]
+guidebook_volume_skip = ["가이드북", "Guide", "팬북"]
+art_works_detect = '(?i)(?:아트북|Art\s*Works)'
+art_works_strip = '(?i)\s*(?:아트북|Art\s*Works).*$'
+art_works_suffix = "Art Works"
+story_part_for_volume = '\s*제\d+부\s*[:：]?\s*[^\d]*'
+school_year_extract = '(\d+)학년\s*편'
+story_part_extract = '제(\d+)부'
+sangha_extract = '(?i)\d+(?:\.\d+)?\s*권?\s*(?:[-–—:\s]+|[\(（]\s*)(상|중|하)'
+chapter_label = '[:：]\s*(.+의\s*장)\s*$'
+base_volume_extract_patterns = [
+  '(?i)(?:제)?(\d+)(?:\.(\d+))?\s*권\s*[\(（]\s*(?:상|중|하)\s*[\)）]',
+  '(?i)(?:제)?(\d+)(?:\.(\d+))?\s*권',
+  '(?i)vol\.?\s*(\d+)(?:\.(\d+))?',
+  '(?i)(?:\s|\.)(\d+)(?:\.(\d+))?\s*(?:권)?\s*[\(（]\s*(?:상|중|하)\s*[\)）]',
+  '(?i)(?:\s|\.)(\d+)(?:\.(\d+))?\s*(?:권)?\s*[-–—:\s]*(?:상|중|하)',
+  '(?i)(?:\s|\.)(\d+)(?:\.(\d+))?\s*(?:권)?\s*[-–—:,，(]',
+  '(?i)(?:\s|\.)(\d+)(?:\.(\d+))?\s*$',
+]
+
+[edition_scoring]
+tilde_bonus = 3
+mid_length_bonus = 2
+mid_length_min = 20
+mid_length_max = 79
+long_title_penalty = -8
+long_title_chars = 100
+# Prefer original over 개정/리커버 when both exist for the same volume
+revision_bonus = -15
+revision_markers = ["개정판", "개정본", "리커버판", "리커버본", "개정", "리커버"]
+standard_edition_bonus = 5
+standard_edition_marker = "(일반판)"
+limited_penalty = -20
+
+# 전역 아크: 본편 시리즈명으로 합류 + 보조 검색
+# global=false 아크는 [[series_overrides]] enable_arcs로만 활성화
+
+[[arcs]]
+id = "sss"
+code = 1
+label = "SSS"
+global = true
+search_suffixes = ["SSS"]
+detect_patterns = [
+  '(?i)(?:!|\s)SSS(?:\s|$|[-–—,，]|\d)',
+  '(?i)!\s*SSS\b',
+]
+volume_extract_pattern = '(?i)\bSSS\s*(\d+)(?:\.(\d+))?\b'
+[[arcs.strip]]
+pattern = '(?i)!\s*SSS(?:\s*\d+(?:\.\d+)?)?\b'
+replace = "!"
+[[arcs.strip]]
+pattern = '(?i)\s+SSS(?:\s*\d+(?:\.\d+)?)?\b'
+replace = " "
+[[arcs.strip]]
+pattern = '(?i)[-–—]\s*SSS(?:\s*\d+(?:\.\d+)?)?\b'
+replace = ""
+
+[[arcs]]
+id = "ex"
+code = 2
+label = "Ex"
+global = true
+search_suffixes = ["Ex"]
+detect_patterns = [
+  '(?i)(?:!|\s)Ex(?:\s|$|[-–—,，]|\d)',
+  '(?i)!\s*Ex\b',
+]
+volume_extract_pattern = '(?i)\bEx\s*(\d+)(?:\.(\d+))?\b'
+[[arcs.strip]]
+pattern = '(?i)!\s*Ex(?:\s*\d+(?:\.\d+)?)?\b'
+replace = "!"
+[[arcs.strip]]
+pattern = '(?i)\s+Ex(?:\s*\d+(?:\.\d+)?)?\b'
+replace = " "
+[[arcs.strip]]
+pattern = '(?i)[-–—]\s*Ex(?:\s*\d+(?:\.\d+)?)?\b'
+replace = ""
+
+[[arcs]]
+id = "sajok"
+code = 3
+label = "사족편"
+global = false
+search_suffixes = ["사족 편", "사족"]
+detect_patterns = ['사족\s*편']
+[[arcs.strip]]
+pattern = '\s*[-–—:~～]*\s*사족\s*편\s*[-–—:~～]*'
+replace = " "
+[[arcs.display_replacements]]
+pattern = '사족\s+편'
+replace = "사족편"
+[[arcs.search_rewrites]]
+# 검색어에 사족편이 붙어 있을 때 알라딘 표기/짧은 표기 보조
+when_contains = "사족편"
+unless_contains = "사족 편"
+replace_from = "사족편"
+replace_to = "사족 편"
+[[arcs.search_rewrites]]
+when_pattern = '사족\s+편'
+replace_pattern = '사족\s*편'
+replace_to = "사족"
+
+[search]
+strip_trailing_series_word = true
+
+# ---------------------------------------------------------------------------
+# 작품별 특수 관리 (권번호 하드코딩 금지 — 패턴·플래그만)
+# ---------------------------------------------------------------------------
+
+[[series_overrides]]
+id = "seishun_buta"
+match_title_regex = '^청춘\s*돼지는\s+'
+canonical_title = "청춘 돼지 시리즈"
+extra_search_queries = ["청춘 돼지"]
+
+[[series_overrides]]
+id = "mushoku_tensei"
+match_contains = ["무직전생"]
+enable_arcs = ["sajok"]
+[[series_overrides.edition_adjustments]]
+contains = "어린 날"
+score = -5
+
+[[series_overrides]]
+id = "bookworm"
+match_contains = ["책벌레의 하극상"]
+# 제N부 합류는 전역 normalize.story_part_strip 사용
+
+[[series_overrides]]
+id = "who_killed_hero"
+match_contains = ["누가 용사를 죽였는가"]
+# 권별 「…의 장」 부제 합류는 전역 chapter_subtitle_strip
+
+[[series_overrides]]
+id = "shunkashuto_daikosha"
+match_contains = ["춘하추동 대행자"]
+canonical_title = "춘하추동 대행자"
+extra_search_queries = ["춘하추동 대행자"]
+# 봄의 춤/여름의 춤/가을의 춤/새벽의 사수 등은 권 부제 — 시리즈명으로 합류
