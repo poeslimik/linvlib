@@ -167,17 +167,18 @@ pub async fn delete_manual_series(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn set_series_complete(
+pub async fn set_series_publish_status(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
     Path(id): Path<Uuid>,
-    Json(body): Json<crate::models::SetSeriesCompleteRequest>,
+    Json(body): Json<crate::models::SetSeriesPublishStatusRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let series = repositories::set_series_complete(&state.pool, id, body.is_complete).await?;
+    let series =
+        repositories::set_series_publish_status(&state.pool, id, &body.publish_status).await?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "id": series.id,
-        "is_complete": series.is_complete,
+        "publish_status": series.publish_status,
     })))
 }
 

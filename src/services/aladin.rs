@@ -168,7 +168,17 @@ pub struct GroupedSeries {
 async fn parse_aladin_response(
     response: reqwest::Response,
 ) -> AppResult<AladinSearchResponse> {
-    let parsed = response.error_for_status()?.json::<AladinSearchResponse>().await?;
+    let response = response.error_for_status()?;
+    let text = response.text().await?;
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('<') {
+        return Err(AppError::Internal(
+            "Aladin API returned an HTML error page".into(),
+        ));
+    }
+    let parsed: AladinSearchResponse = serde_json::from_str(&text).map_err(|err| {
+        AppError::Internal(format!("Aladin API returned invalid JSON: {err}"))
+    })?;
     if let Some(code) = parsed.error_code {
         let message = parsed
             .error_message
@@ -404,6 +414,15 @@ fn expanded_search_queries(query: &str) -> Vec<(String, &'static str)> {
         }
     }
 
+    // 정규화 제목에 " - 부기팝 시리즈" 같은 접미가 남으면 Title 검색이 0건이 된다.
+    if let Some((head, _)) = query.split_once(" - ") {
+        let head = head.trim();
+        if head.chars().count() >= 2 && head != query {
+            out.push((head.to_string(), "Title"));
+            out.push((head.to_string(), "Keyword"));
+        }
+    }
+
     out
 }
 
@@ -500,9 +519,6 @@ pub async fn import_search(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.item_id));
 
-    // 검색에 안 잡히는 시리즈 권을 시리즈 페이지로 보강
-    items = expand_aladin_series_siblings(state, items, true).await?;
-
     let groups = group_by_series_with(items, rules_of(state));
     let mut results = Vec::new();
 
@@ -541,29 +557,92 @@ pub async fn import_series(
         }
     };
 
+    let existing = repositories::find_series_by_aladin_id(&state.pool, &series_key).await?;
     let search_query =
         resolve_search_query(state, &series_key, title_hint.as_deref()).await?;
-    let mut items = search_items(state, &search_query).await?;
 
-    let title_rules = rules_of(state);
+    let mut search_queries = vec![search_query.clone()];
+    let mut identity_keys = HashSet::new();
+    identity_keys.insert(series_key.clone());
+    identity_keys.insert(format!("title:{}", normalize_series_title(&search_query)));
+    if let Some(title) = series_key.strip_prefix("title:") {
+        identity_keys.insert(format!("title:{}", normalize_series_title(title)));
+    }
 
-    // 검색어가 너무 길거나 특수(Art Works 등)하면 짧은 보조 쿼리도 시도
-    for alt in title_rules.alternate_search_queries(&search_query, title_hint.as_deref()) {
-        if let Ok(extra) = search_items(state, &alt).await {
-            items.extend(extra);
+    let mut known_item_ids = HashSet::new();
+    let mut volume_title_keys = HashSet::new();
+    let mut stored_aliases = Vec::new();
+    if let Some(ref series) = existing {
+        identity_keys.insert(series.aladin_series_id.clone());
+        identity_keys.insert(format!(
+            "title:{}",
+            normalize_series_title(&series.title)
+        ));
+        search_queries.push(normalize_series_title(&series.title));
+
+        stored_aliases = repositories::list_series_aladin_aliases(&state.pool, series.id).await?;
+        for alias in &stored_aliases {
+            identity_keys.insert(alias.clone());
+            if let Some(query) = search_query_for_aladin_key(alias) {
+                search_queries.push(query);
+            }
+        }
+
+        let vols = repositories::list_volumes(&state.pool, series.id, "asc").await?;
+        for vol in vols {
+            let key = format!("title:{}", normalize_series_title(&vol.title));
+            if key != "title:" {
+                volume_title_keys.insert(key.clone());
+                identity_keys.insert(key.clone());
+                if let Some(query) = search_query_for_aladin_key(&key) {
+                    search_queries.push(query);
+                }
+            }
+            if let Ok(id) = vol.aladin_item_id.parse::<i64>() {
+                known_item_ids.insert(id);
+            } else if let Some(id) = vol
+                .aladin_item_id
+                .strip_prefix("item:")
+                .and_then(|id| id.parse::<i64>().ok())
+            {
+                known_item_ids.insert(id);
+            }
         }
     }
 
-    // 본편 검색만으로는 외전/특별편이 빠질 수 있어 작품·전역 아크 보조 검색을 합친다
-    for arc_query in title_rules.import_arc_search_queries(&search_query) {
-        if let Ok(extra) = search_items(state, &arc_query).await {
+    let merged_identity = !stored_aliases.is_empty() || volume_title_keys.len() > 1;
+
+    let title_rules = rules_of(state);
+    let mut items = Vec::new();
+    let mut seen_queries = HashSet::new();
+    for query in &search_queries {
+        let query = query.trim();
+        if query.is_empty() || !seen_queries.insert(query.to_string()) {
+            continue;
+        }
+        if let Ok(extra) = search_items(state, query).await {
             items.extend(extra);
+        }
+        for alt in title_rules.alternate_search_queries(query, title_hint.as_deref()) {
+            if seen_queries.insert(alt.clone()) {
+                if let Ok(extra) = search_items(state, &alt).await {
+                    items.extend(extra);
+                }
+            }
+        }
+        for arc_query in title_rules.import_arc_search_queries(query) {
+            if seen_queries.insert(arc_query.clone()) {
+                if let Ok(extra) = search_items(state, &arc_query).await {
+                    items.extend(extra);
+                }
+            }
         }
     }
     let raw_hint = title_hint.as_deref().unwrap_or("").trim();
     if !raw_hint.is_empty()
         && title_rules.normalize_series_title(raw_hint) != search_query
         && title_rules.extract_series_arc(raw_hint) > 0
+        && seen_queries.insert(raw_hint.to_string())
     {
         if let Ok(extra) = search_items(state, raw_hint).await {
             items.extend(extra);
@@ -571,16 +650,20 @@ pub async fn import_series(
     }
 
     // item_id 기준 중복 제거
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.item_id));
 
     // ItemSearch가 일부 권만 줄 때(특히 전자책) 시리즈 페이지로 형제 권을 채운다.
     items = expand_aladin_series_siblings(state, items, false).await?;
 
     let groups = group_by_series_with(items.clone(), title_rules);
-    let mut group = select_group(&groups, &series_key, &search_query)
-        .ok_or_else(|| AppError::NotFound("series not found in aladin".into()))?
-        .clone();
+    let mut group = if merged_identity {
+        union_groups_for_series(&groups, &identity_keys, &known_item_ids)
+            .or_else(|| select_group(&groups, &series_key, &search_query).cloned())
+    } else {
+        select_group(&groups, &series_key, &search_query).cloned()
+    }
+    .ok_or_else(|| AppError::NotFound("series not found in aladin".into()))?;
 
     // 합본/다른 에디션의 더 이른 출간일을 본권에 반영 (알라딘 재등록 날짜 오인 보정)
     let date_hints = collect_earliest_volume_dates(&items);
@@ -603,16 +686,34 @@ pub async fn import_series(
         .map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
 
     // 요청한 시리즈(갱신)가 있으면 그 행에 붙인다. 정규화로 키가 바뀌어도 새 행을 만들지 않는다.
-    let series = if let Some(existing) =
-        repositories::find_series_by_aladin_id(&state.pool, &series_key).await?
-    {
-        repositories::canonicalize_series_identity(
-            &state.pool,
-            existing.id,
-            &group.aladin_series_id,
-            &group.title,
-        )
-        .await?
+    // 수동 합병 시리즈는 대표 제목/키를 유지하고, 나머지 알라딘 식별자는 별칭으로 남긴다.
+    let series = if let Some(existing) = existing {
+        if merged_identity {
+            for candidate in groups.iter().filter(|g| {
+                let title_key = format!("title:{}", normalize_series_title(&g.title));
+                identity_keys.contains(&g.aladin_series_id)
+                    || identity_keys.contains(&title_key)
+                    || g.items.iter().any(|item| known_item_ids.contains(&item.item_id))
+            }) {
+                if candidate.aladin_series_id != existing.aladin_series_id {
+                    repositories::add_series_aladin_alias(
+                        &state.pool,
+                        existing.id,
+                        &candidate.aladin_series_id,
+                    )
+                    .await?;
+                }
+            }
+            existing
+        } else {
+            repositories::canonicalize_series_identity(
+                &state.pool,
+                existing.id,
+                &group.aladin_series_id,
+                &group.title,
+            )
+            .await?
+        }
     } else {
         repositories::upsert_series_with_cover(
             &state.pool,
@@ -759,6 +860,15 @@ pub async fn import_series(
 pub async fn refresh_all_aladin(
     state: &AppState,
 ) -> AppResult<crate::models::BulkRefreshResponse> {
+    refresh_all_aladin_bounded(state, None).await
+}
+
+/// Like [`refresh_all_aladin`], but if `stay_on_date` is set, stop once the KST
+/// calendar day is no longer that date (so a 23:30 job cannot spend tomorrow's quota).
+pub async fn refresh_all_aladin_bounded(
+    state: &AppState,
+    stay_on_date: Option<chrono::NaiveDate>,
+) -> AppResult<crate::models::BulkRefreshResponse> {
     use crate::models::{BulkRefreshItem, BulkRefreshResponse};
     use std::time::Duration;
     use tokio::time::sleep;
@@ -770,8 +880,24 @@ pub async fn refresh_all_aladin(
     let mut skipped = 0i64;
     let mut items = Vec::with_capacity(series_list.len());
     let mut stopped_for_quota = false;
+    let mut stopped_for_midnight = false;
 
     for (idx, (series_id, title, aladin_series_id)) in series_list.into_iter().enumerate() {
+        if let Some(day) = stay_on_date {
+            if crate::services::quota::seoul_today_date() != day {
+                stopped_for_midnight = true;
+                skipped = total - (refreshed + failed);
+                tracing::info!(
+                    refreshed,
+                    failed,
+                    skipped,
+                    stay_on_date = %day,
+                    now = %crate::services::quota::seoul_now_display(),
+                    "stopping bulk refresh: KST day rolled over"
+                );
+                break;
+            }
+        }
         if crate::services::quota::remaining_soft_quota(state).await? == 0 {
             stopped_for_quota = true;
             skipped = total - (refreshed + failed);
@@ -831,7 +957,9 @@ pub async fn refresh_all_aladin(
         }
     }
 
-    let note = if stopped_for_quota {
+    let note = if stopped_for_midnight {
+        format!("midnight stop: refreshed={refreshed} failed={failed} deferred={skipped}")
+    } else if stopped_for_quota {
         format!("quota pause: refreshed={refreshed} failed={failed} deferred={skipped}")
     } else {
         format!("complete: refreshed={refreshed} failed={failed}")
@@ -930,6 +1058,61 @@ fn select_group<'a>(
                 .map(normalize_series_title)
                 .is_some_and(|k| !k.is_empty() && (gt.contains(&k) || k.contains(&gt))))
     })
+}
+
+fn search_query_for_aladin_key(key: &str) -> Option<String> {
+    let title = key.strip_prefix("title:")?;
+    let query = normalize_series_title(title);
+    if query.is_empty() {
+        None
+    } else {
+        Some(query)
+    }
+}
+
+fn union_groups_for_series(
+    groups: &[GroupedSeries],
+    identity_keys: &HashSet<String>,
+    known_item_ids: &HashSet<i64>,
+) -> Option<GroupedSeries> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    let mut meta: Option<GroupedSeries> = None;
+
+    for group in groups {
+        let title_key = format!("title:{}", normalize_series_title(&group.title));
+        let matches_identity =
+            identity_keys.contains(&group.aladin_series_id) || identity_keys.contains(&title_key);
+        let matches_item = group
+            .items
+            .iter()
+            .any(|item| known_item_ids.contains(&item.item_id));
+        if !matches_identity && !matches_item {
+            continue;
+        }
+        if meta.is_none() {
+            meta = Some(GroupedSeries {
+                aladin_series_id: group.aladin_series_id.clone(),
+                title: group.title.clone(),
+                author: group.author.clone(),
+                publisher: group.publisher.clone(),
+                cover_url: group.cover_url.clone(),
+                items: Vec::new(),
+            });
+        }
+        for item in &group.items {
+            if seen.insert(item.item_id) {
+                items.push(item.clone());
+            }
+        }
+    }
+
+    let mut group = meta?;
+    if items.is_empty() {
+        return None;
+    }
+    group.items = items;
+    Some(group)
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -1397,6 +1580,27 @@ mod tests {
             ),
             "무직전생"
         );
+        assert_eq!(
+            normalize_series_title("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel"),
+            "새벽의 부기팝"
+        );
+    }
+
+    #[test]
+    fn expands_dash_suffix_titles_for_search() {
+        let variants = expanded_search_queries("새벽의 부기팝 - 부기팝 시리즈");
+        assert!(variants
+            .iter()
+            .any(|(s, t)| s == "새벽의 부기팝" && *t == "Title"));
+    }
+
+    #[test]
+    fn groups_boogiepop_dawn_as_own_series() {
+        let items = vec![item("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel", 432346)];
+        let groups = group_by_series(items);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "새벽의 부기팝");
+        assert_eq!(groups[0].items.len(), 1);
     }
 
     #[test]
@@ -1431,6 +1635,45 @@ mod tests {
             )
             .map(|(n, _)| n),
             Some(4)
+        );
+        assert_eq!(
+            extract_volume_parts("언리쉬드 앤솔로지 : AREA 1 - Novel Engine"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            extract_volume_parts("언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine"),
+            Some((1, 2))
+        );
+        assert_eq!(
+            extract_volume_parts("언리쉬드 앤솔로지 : AREA 2-2 - Novel Engine"),
+            Some((2, 2))
+        );
+    }
+
+    #[test]
+    fn keeps_hyphen_subvolumes_distinct() {
+        let items = vec![
+            item("언리쉬드 앤솔로지 : AREA 1 - Novel Engine", 1),
+            item("언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine", 2),
+            item("언리쉬드 앤솔로지 : AREA 2 - Novel Engine", 3),
+            item("언리쉬드 앤솔로지 : AREA 2-2 - Novel Engine", 4),
+            item("언리쉬드 앤솔로지 : AREA 3 - Novel Engine", 5),
+        ];
+        let groups = group_by_series(items);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "언리쉬드 앤솔로지 : AREA");
+        assert_eq!(groups[0].items.len(), 5);
+        let nums = assign_volume_numbers(&groups[0].items);
+        let titles: Vec<_> = nums.iter().map(|(i, n)| (i.title.as_str(), *n)).collect();
+        assert_eq!(
+            titles,
+            vec![
+                ("언리쉬드 앤솔로지 : AREA 1 - Novel Engine", 1),
+                ("언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine", 2),
+                ("언리쉬드 앤솔로지 : AREA 2 - Novel Engine", 3),
+                ("언리쉬드 앤솔로지 : AREA 2-2 - Novel Engine", 4),
+                ("언리쉬드 앤솔로지 : AREA 3 - Novel Engine", 5),
+            ]
         );
     }
 
@@ -2194,5 +2437,27 @@ mod tests {
         assert!(rules().is_revision_edition(
             "Re : 제로부터 시작하는 이세계 생활 1 - 개정판, Novel Engine"
         ));
+    }
+
+    #[test]
+    fn unions_manually_merged_aladin_groups() {
+        let groups = group_by_series(vec![
+            item("부기팝은 웃지 않는다 - 미디어웍스 문고", 1),
+            item("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel", 2),
+            item("관련 없는 다른 작품 1 - NT Novel", 99),
+        ]);
+        let mut keys = HashSet::new();
+        keys.insert("title:부기팝은 웃지 않는다".into());
+        keys.insert("title:새벽의 부기팝".into());
+        let known = HashSet::from([1_i64]);
+        let merged = union_groups_for_series(&groups, &keys, &known).expect("union");
+        let ids: HashSet<i64> = merged.items.iter().map(|i| i.item_id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&2));
+        assert!(!ids.contains(&99));
+        assert_eq!(
+            search_query_for_aladin_key("title:새벽의 부기팝"),
+            Some("새벽의 부기팝".into())
+        );
     }
 }

@@ -28,7 +28,20 @@ async function request(path, options = {}) {
   }
 
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const gateway = res.status === 502 || res.status === 503 || res.status === 504;
+      throw new ApiError(
+        gateway
+          ? "서버 또는 알라딘 연결이 잠시 실패했습니다. 잠시 후 다시 시도해 주세요."
+          : `서버 응답이 올바르지 않습니다 (${res.status || "network"}).`,
+        res.status || 502,
+      );
+    }
+  }
   if (!res.ok) {
     throw new ApiError(data?.error || res.statusText, res.status, data);
   }
@@ -114,10 +127,10 @@ export const api = {
   deleteManualSeries: (id) =>
     request(`/series/${id}`, { method: "DELETE" }),
   searchSeries: (q) => request(`/search?q=${encodeURIComponent(q)}`),
-  setSeriesComplete: (id, is_complete) =>
-    request(`/series/${id}/complete`, {
+  setSeriesPublishStatus: (id, publish_status) =>
+    request(`/series/${id}/publish-status`, {
       method: "PUT",
-      body: JSON.stringify({ is_complete }),
+      body: JSON.stringify({ publish_status }),
     }),
   createCatalogRequest: (payload) =>
     request("/catalog-requests", {

@@ -905,6 +905,8 @@ impl TitleRules {
         if let Some((major, minor)) = self.extract_volume_parts(&cleaned) {
             let num = if minor == 0 {
                 format!("{major}")
+            } else if hyphen_subvolume_in_title(&cleaned, major, minor) {
+                format!("{major}-{minor}")
             } else {
                 format!("{major}.{minor}")
             };
@@ -951,6 +953,15 @@ impl TitleRules {
 pub fn default_rules() -> &'static TitleRules {
     static RULES: OnceLock<TitleRules> = OnceLock::new();
     RULES.get_or_init(TitleRules::embedded)
+}
+
+fn hyphen_subvolume_in_title(title: &str, major: i64, minor: u8) -> bool {
+    let compact = format!("{major}-{minor}");
+    let spaced = format!("{major} - {minor}");
+    title.contains(&compact)
+        || title.contains(&spaced)
+        || title.contains(&format!("{major}–{minor}"))
+        || title.contains(&format!("{major}—{minor}"))
 }
 
 fn protect_numeric_ratios(title: &str) -> String {
@@ -1035,6 +1046,60 @@ mod tests {
                 0
             ),
             "새벽의 사수"
+        );
+    }
+
+    #[test]
+    fn strips_named_series_volume_suffix() {
+        let rules = TitleRules::embedded();
+        assert_eq!(
+            rules.normalize_series_title("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel"),
+            "새벽의 부기팝"
+        );
+        assert_eq!(
+            rules.extract_volume_parts("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel"),
+            Some((6, 0))
+        );
+    }
+
+    #[test]
+    fn hyphen_subvolumes_stay_in_same_series() {
+        let rules = TitleRules::embedded();
+        for title in [
+            "언리쉬드 앤솔로지 : AREA 1 - Novel Engine",
+            "언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine",
+            "언리쉬드 앤솔로지 : AREA 2-2 - Novel Engine",
+            "언리쉬드 앤솔로지 : AREA 8 - Novel Engine",
+        ] {
+            assert_eq!(
+                rules.normalize_series_title(title),
+                "언리쉬드 앤솔로지 : AREA",
+                "title={title}"
+            );
+        }
+        assert_eq!(
+            rules.extract_volume_parts("언리쉬드 앤솔로지 : AREA 1 - Novel Engine"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            rules.extract_volume_parts("언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine"),
+            Some((1, 2))
+        );
+        assert_eq!(
+            rules.format_volume_label_from_title(
+                "언리쉬드 앤솔로지 : AREA 1-2 - Novel Engine",
+                2,
+                0
+            ),
+            "1-2권"
+        );
+        assert_eq!(
+            rules.format_volume_label_from_title(
+                "어서 오세요 실력지상주의 교실에 7.5 - S Novel",
+                8,
+                0
+            ),
+            "7.5권"
         );
     }
 }

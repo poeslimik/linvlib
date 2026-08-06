@@ -12,14 +12,15 @@ use crate::{
 const LAST_SCHEDULED_REFRESH_DATE_KEY: &str = "last_scheduled_refresh_date";
 /// KST wall-clock time when the daily scheduled refresh starts.
 const RUN_HOUR: u32 = 23;
-const RUN_MINUTE: u32 = 50;
+const RUN_MINUTE: u32 = 30;
 
-/// Poll every minute and run Aladin refresh once per KST day at/after 23:50,
-/// consuming whatever soft quota remains that day.
+/// Poll every minute and run Aladin refresh once per KST day at/after 23:30,
+/// consuming whatever soft quota remains that day. Stops at KST midnight so
+/// the next day's quota is not spent.
 ///
 /// Last successful run date is persisted in `app_meta` so daytime restarts do not
-/// re-trigger. If the process was down at 23:50 but comes back the same evening
-/// (still ≥ 23:50), it catches up once.
+/// re-trigger. If the process was down at 23:30 but comes back the same evening
+/// (still ≥ 23:30), it catches up once.
 pub fn spawn_midnight_refresh(state: AppState) {
     tokio::spawn(async move {
         let mut last_run_date = load_last_run_date(&state).await;
@@ -45,10 +46,10 @@ pub fn spawn_midnight_refresh(state: AppState) {
                 today = %today,
                 server_time = %quota::seoul_now_display(),
                 ?quota_remaining,
-                "KST 23:50 window — starting scheduled Aladin refresh (use remaining soft quota)"
+                "KST 23:30 window — starting scheduled Aladin refresh (use remaining soft quota until midnight)"
             );
 
-            match aladin::refresh_all_aladin(&state).await {
+            match aladin::refresh_all_aladin_bounded(&state, Some(today)).await {
                 Ok(res) => {
                     last_run_date = Some(today);
                     let _ = repositories::set_app_meta(

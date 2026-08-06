@@ -2,16 +2,15 @@
 """Local-only deploy console for linvlib (build / upload / restart).
 
 Usage (Windows):
-  cd tools\\deploy-gui
-  copy config.example.json config.json   # edit paths/IP/key
-  python server.py
-  # open http://127.0.0.1:8765
+  Double-click start.bat
+  # or: copy config.example.json config.json, edit, then python server.py
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -22,10 +21,12 @@ from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
+UPLOAD_DIR = HERE / "_uploads"
 LOG_LOCK = threading.Lock()
 LOG_LINES: list[str] = []
 JOB_LOCK = threading.Lock()
 JOB_RUNNING = False
+MAX_DB_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MiB
 
 
 def load_config() -> dict:
@@ -191,6 +192,56 @@ def do_backup_now() -> int:
     )
 
 
+def do_upload_db(local_path: str, backup_first: bool, restart: bool) -> int:
+    """Replace remote linvlib.db with a local SQLite file."""
+    src = Path(local_path)
+    if not src.is_file():
+        log(f"missing db file: {src}")
+        return 1
+    if src.suffix.lower() != ".db":
+        log("refusing upload: only .db files are allowed")
+        return 1
+    size = src.stat().st_size
+    if size <= 0 or size > MAX_DB_UPLOAD_BYTES:
+        log(f"refusing upload: size {size} bytes (limit {MAX_DB_UPLOAD_BYTES})")
+        return 1
+
+    remote_dir = CFG["remote_dir"]
+    target = f"{CFG['ssh_user']}@{CFG['ssh_host']}"
+    service = CFG["service_name"]
+
+    if backup_first:
+        log("remote backup before replace…")
+        if do_backup_now() != 0:
+            log("backup failed — aborting db upload")
+            return 1
+
+    log(f"stop {service}")
+    if remote(f"sudo systemctl stop {service}") != 0:
+        log("warn: stop failed (continuing)")
+
+    # Drop WAL/SHM so the replaced main db is authoritative.
+    remote(f"rm -f {remote_dir}/linvlib.db-wal {remote_dir}/linvlib.db-shm")
+
+    log(f"upload {src.name} ({size} bytes) → {remote_dir}/linvlib.db")
+    code = run(scp_base() + [str(src), f"{target}:{remote_dir}/linvlib.db"])
+    if code != 0:
+        log("upload failed — attempting restart anyway")
+        if restart:
+            do_restart()
+        return code
+
+    remote(f"ls -lh {remote_dir}/linvlib.db")
+
+    if restart:
+        log(f"start {service}")
+        if do_restart() != 0:
+            return 1
+    else:
+        log("restart skipped — start the service manually when ready")
+    return 0
+
+
 def run_job(action: str, payload: dict) -> None:
     global JOB_RUNNING
     with JOB_LOCK:
@@ -224,6 +275,20 @@ def run_job(action: str, payload: dict) -> None:
             code = do_logs()
         elif action == "backup_remote":
             code = do_backup_now()
+        elif action == "upload_db":
+            local_path = payload.get("local_path") or ""
+            code = do_upload_db(
+                local_path,
+                backup_first=bool(payload.get("backup_first", True)),
+                restart=bool(payload.get("restart", True)),
+            )
+            # Clean staged upload after job (best-effort).
+            try:
+                p = Path(local_path)
+                if p.is_file() and UPLOAD_DIR in p.resolve().parents:
+                    p.unlink(missing_ok=True)
+            except OSError:
+                pass
         elif action == "ssh_test":
             code = remote("echo ok && hostname && uname -a")
         else:
@@ -241,6 +306,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>linvlib 배포 콘솔</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.png" type="image/png" sizes="32x32" />
   <style>
     :root {
       --bg: #eef2f5;
@@ -326,6 +393,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </section>
 
     <section class="panel">
+      <h2>데이터베이스 업로드</h2>
+      <p class="meta" style="margin-top:0">로컬 <code>.db</code>로 서버 <code>linvlib.db</code>를 교체합니다. 기본으로 원격 백업 → stop → 업로드 → WAL 정리 → 재시작 순입니다.</p>
+      <div class="row" style="align-items:center; margin:0.75rem 0;">
+        <input type="file" id="db-file" accept=".db,application/x-sqlite3,application/octet-stream" />
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="db-backup" checked /> 교체 전 원격 백업</label>
+        <label><input type="checkbox" id="db-restart" checked /> 업로드 후 재시작</label>
+      </div>
+      <div class="row">
+        <button class="danger" id="btn-db-upload">DB 업로드·교체</button>
+      </div>
+    </section>
+
+    <section class="panel">
       <h2>실행 로그</h2>
       <pre id="log"></pre>
     </section>
@@ -377,6 +459,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
     document.getElementById("btn-status").onclick = () => post("status");
     document.getElementById("btn-logs").onclick = () => post("logs");
     document.getElementById("btn-backup").onclick = () => post("backup_remote");
+    document.getElementById("btn-db-upload").onclick = async () => {
+      const input = document.getElementById("db-file");
+      if (!input.files || !input.files[0]) {
+        alert("업로드할 .db 파일을 선택하세요.");
+        return;
+      }
+      const file = input.files[0];
+      if (!/\.db$/i.test(file.name)) {
+        alert(".db 파일만 업로드할 수 있습니다.");
+        return;
+      }
+      if (!confirm(`${file.name} (${Math.round(file.size/1024)} KB)를 서버 DB로 교체할까요?`)) return;
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      fd.append("backup_first", document.getElementById("db-backup").checked ? "1" : "0");
+      fd.append("restart", document.getElementById("db-restart").checked ? "1" : "0");
+      await fetch("/api/upload-db", { method: "POST", body: fd });
+      await refreshLog();
+    };
     document.getElementById("btn-clear").onclick = async () => {
       await fetch("/api/log", { method: "DELETE" });
       await refreshLog();
@@ -392,6 +493,80 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def _multipart_boundary(content_type: str) -> bytes | None:
+    m = re.search(r"boundary=([^;]+)", content_type or "", flags=re.I)
+    if not m:
+        return None
+    b = m.group(1).strip().strip('"')
+    return b.encode("ascii", errors="ignore")
+
+
+def save_multipart_db_upload(headers, body: bytes) -> tuple[Path | None, dict, str | None]:
+    """Parse multipart form; return (saved_path, options, error)."""
+    boundary = _multipart_boundary(headers.get("Content-Type", ""))
+    if not boundary:
+        return None, {}, "multipart boundary missing"
+
+    opts: dict = {"backup_first": True, "restart": True}
+    file_bytes: bytes | None = None
+    filename = "upload.db"
+
+    for part in body.split(b"--" + boundary):
+        if not part or part in (b"--\r\n", b"--", b"--\r\n--"):
+            continue
+        if part.startswith(b"--"):
+            continue
+        if part[:2] == b"\r\n":
+            part = part[2:]
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
+        if b"\r\n\r\n" not in part:
+            continue
+        head, data = part.split(b"\r\n\r\n", 1)
+        if data.endswith(b"\r\n"):
+            data = data[:-2]
+        head_s = head.decode("utf-8", errors="replace")
+        name_m = re.search(r'name="([^"]+)"', head_s)
+        if not name_m:
+            continue
+        name = name_m.group(1)
+        if name == "file":
+            fn_m = re.search(r'filename="([^"]*)"', head_s)
+            if fn_m and fn_m.group(1):
+                filename = Path(fn_m.group(1)).name
+            file_bytes = data
+        elif name == "backup_first":
+            opts["backup_first"] = data.decode("utf-8", errors="replace").strip() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+        elif name == "restart":
+            opts["restart"] = data.decode("utf-8", errors="replace").strip() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+
+    if file_bytes is None:
+        return None, opts, "file field missing"
+    if not filename.lower().endswith(".db"):
+        return None, opts, "only .db files allowed"
+    if len(file_bytes) > MAX_DB_UPLOAD_BYTES:
+        return None, opts, "file too large"
+    # SQLite magic
+    if not file_bytes.startswith(b"SQLite format 3\x00"):
+        return None, opts, "not a SQLite database file"
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^\w.\-]+", "_", filename)
+    dest = UPLOAD_DIR / f"{int(time.time())}_{safe}"
+    dest.write_bytes(file_bytes)
+    return dest, opts, None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -417,6 +592,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if path == "/favicon.svg":
+            fav = HERE / "favicon.svg"
+            if fav.exists():
+                self._send(200, fav.read_bytes(), "image/svg+xml")
+                return
+        if path in ("/favicon.png", "/favicon.ico"):
+            fav = HERE / "favicon.png"
+            if fav.exists():
+                self._send(200, fav.read_bytes(), "image/png")
+                return
         if path == "/api/log":
             with LOG_LOCK:
                 lines = list(LOG_LINES)
@@ -450,11 +635,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_DB_UPLOAD_BYTES + (2 * 1024 * 1024):
+            self._json(413, {"error": "payload too large"})
+            return
+        raw = self.rfile.read(length) if length else b""
+
+        if path == "/api/upload-db":
+            saved, opts, err = save_multipart_db_upload(self.headers, raw)
+            if err or saved is None:
+                self._json(400, {"error": err or "upload failed"})
+                return
+            log(f"staged db upload: {saved} ({saved.stat().st_size} bytes)")
+            payload = {
+                "local_path": str(saved),
+                "backup_first": opts.get("backup_first", True),
+                "restart": opts.get("restart", True),
+            }
+            threading.Thread(
+                target=run_job, args=("upload_db", payload), daemon=True
+            ).start()
+            self._json(202, {"ok": True, "action": "upload_db", "staged": saved.name})
+            return
+
         if path != "/api/run":
             self._json(404, {"error": "not found"})
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
         except json.JSONDecodeError:
@@ -477,6 +683,7 @@ def main() -> None:
         log("warn: ssh/scp not found on PATH (install OpenSSH client)")
     if os.name == "nt" and not shutil.which("wsl"):
         log("warn: wsl not found — build will fail until WSL is available")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     httpd = ThreadingHTTPServer((bind, port), Handler)
     log(f"deploy GUI listening on http://{bind}:{port}")
     log(f"config: {CONFIG_PATH}")

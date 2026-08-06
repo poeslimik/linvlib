@@ -1,22 +1,26 @@
 # 서버 배포 치트시트
 
+`.\tools\deploy-gui\start.bat`
+
 클라우드 VM에 linvlib를 올리고 재시작할 때 자주 쓰는 명령 모음입니다.  
 아래 값은 **예시**이므로 본인 환경에 맞게 바꾸세요.
 
-| 항목 | 값 (예시) |
-|------|-----------|
-| 공인 IP / 호스트 | `YOUR_SERVER_IP` |
-| 도메인 | `https://example.com` |
-| SSH 사용자 | `ubuntu` |
-| SSH 키 | `C:\Users\YOU\.ssh\your-key.key` |
-| 서버 배포 경로 | `~/linvlib` (`/home/ubuntu/linvlib`) |
-| 앱 포트 | `3000` (nginx가 80/443 → 3000 프록시) |
+
+| 항목          | 값 (예시)                                           |
+| ----------- | ------------------------------------------------ |
+| 공인 IP / 호스트 | `129.225.165.107`                                |
+| 도메인         | `https://linvlib.cloud`                          |
+| SSH 사용자     | `ubuntu`                                         |
+| SSH 키       | `C:\\Users\\iskim\\.ssh\\ssh-key-2026-07-28.key` |
+| 서버 배포 경로    | `~/linvlib` (`/home/ubuntu/linvlib`)             |
+| 앱 포트        | `3000` (nginx가 80/443 → 3000 프록시)                |
+
 
 PowerShell에서는 매번 이렇게 두고 쓰면 편합니다.
 
 ```powershell
-$KEY = "C:\Users\YOU\.ssh\your-key.key"
-$IP  = "YOUR_SERVER_IP"
+$KEY = "C:\\Users\\iskim\\.ssh\\ssh-key-2026-07-28.key"
+$IP  = "129.225.165.107"
 ```
 
 ---
@@ -39,6 +43,8 @@ file target/release/linvlib   # ELF 64-bit 이어야 함
 
 ---
 
+
+
 ## 2. SSH 접속
 
 ```powershell
@@ -47,7 +53,11 @@ ssh -i $KEY ubuntu@${IP}
 
 ---
 
+
+
 ## 3. 파일 업로드 (PowerShell → 서버)
+
+
 
 ### 배포 폴더가 없을 때 (최초 1회)
 
@@ -56,6 +66,8 @@ ssh -i $KEY ubuntu@${IP}
 ```bash
 mkdir -p ~/linvlib/config
 ```
+
+
 
 ### 바이너리만 (Rust 로직 변경)
 
@@ -77,6 +89,8 @@ sudo systemctl start linvlib
 # 또는: sudo systemctl restart linvlib
 ```
 
+
+
 ### static만 (프론트 HTML/CSS/JS)
 
 ```powershell
@@ -91,6 +105,8 @@ scp -i $KEY -r static ubuntu@${IP}:~/linvlib/
 scp -i $KEY static\js\pages\tierlist.js ubuntu@${IP}:~/linvlib/static/js/pages/
 ```
 
+
+
 ### 제목 규칙만
 
 ```powershell
@@ -101,6 +117,8 @@ scp -i $KEY config\title_rules.toml ubuntu@${IP}:~/linvlib/config/
 # SSH — 규칙 파일은 기동 시 읽히므로 재시작
 sudo systemctl restart linvlib
 ```
+
+
 
 ### 한 번에 (코드+프론트 배포)
 
@@ -115,6 +133,8 @@ scp -i $KEY config\title_rules.toml ubuntu@${IP}:~/linvlib/config/
 chmod +x ~/linvlib/linvlib
 sudo systemctl restart linvlib
 ```
+
+
 
 ### `.env` 수정
 
@@ -156,6 +176,8 @@ grep APP_BASE_URL .env
 sudo systemctl restart linvlib
 ```
 
+
+
 #### B) PC에서 고쳐 올린 뒤 덮어쓰기
 
 로컬 `.env`를 서버용으로 맞춘 다음:
@@ -190,13 +212,15 @@ SMTP_FROM=linvlib <noreply@example.com>
 RUST_LOG=info,linvlib=info
 ```
 
-| 변수 | 의미 |
-|------|------|
-| `APP_BASE_URL` | 인증 메일 링크의 공개 주소. 서버는 `https://linvlib.cloud` |
-| `EMAIL_DEV_MODE` | `true`면 가입 화면에 인증 토큰 링크 노출(개발용). **운영은 `false`** |
-| `ADMIN_EMAIL` | 이 주소로 가입 시 관리자 + 이메일 인증 생략 |
-| `BIND_ADDR` | 앱 리슨 주소. nginx 뒤에서 `0.0.0.0:3000` |
-| `SMTP_*` | 인증 메일 발송. 비어 있으면 사실상 dev 모드처럼 동작할 수 있음 |
+
+| 변수               | 의미                                               |
+| ---------------- | ------------------------------------------------ |
+| `APP_BASE_URL`   | 인증 메일 링크의 공개 주소. 서버는 `https://linvlib.cloud`     |
+| `EMAIL_DEV_MODE` | `true`면 가입 화면에 인증 토큰 링크 노출(개발용). **운영은** `false` |
+| `ADMIN_EMAIL`    | 이 주소로 가입 시 관리자 + 이메일 인증 생략                       |
+| `BIND_ADDR`      | 앱 리슨 주소. nginx 뒤에서 `0.0.0.0:3000`                |
+| `SMTP_*`         | 인증 메일 발송. 비어 있으면 사실상 dev 모드처럼 동작할 수 있음           |
+
 
 systemd 유닛에 `WorkingDirectory=/home/ubuntu/linvlib`가 있어야 `.env`를 그 경로에서 읽습니다. 기동이 이상하면 유닛을 확인하세요.
 
@@ -205,6 +229,8 @@ systemctl cat linvlib
 ```
 
 ---
+
+
 
 ## 4. 서비스 제어 (SSH)
 
@@ -239,6 +265,8 @@ sudo systemctl status nginx --no-pager
 
 ---
 
+
+
 ## 5. 동작 확인
 
 ```bash
@@ -259,6 +287,8 @@ curl.exe -sI https://linvlib.cloud/health
 
 ---
 
+
+
 ## 6. 업로드 실패 (`dest open … Failure`)
 
 `scp: dest open "linvlib/linvlib": Failure` 가 나오면 서버 쪽 문제입니다.
@@ -276,30 +306,40 @@ sudo systemctl stop linvlib   # 바이너리 잠김/권한 이슈 완화
 
 ---
 
+
+
 ## 7. 무엇을 올릴지 빠른 판단
 
-| 변경 내용 | 올릴 것 | 재시작 |
-|-----------|---------|--------|
-| `src/**` (Rust) | `linvlib` 바이너리 | `systemctl restart linvlib` |
-| `static/**` | `static/` | 보통 불필요 (Ctrl+F5) |
-| `config/title_rules.toml` | 해당 파일 | 재시작 |
-| `.env` | `.env` | 재시작 |
-| DB 스키마(마이그레이션) | 바이너리 (마이그레이션 내장) | 재시작 — DB 파일은 백업 후 유지 |
+
+| 변경 내용                     | 올릴 것             | 재시작                         |
+| ------------------------- | ---------------- | --------------------------- |
+| `src/**` (Rust)           | `linvlib` 바이너리   | `systemctl restart linvlib` |
+| `static/**`               | `static/`        | 보통 불필요 (Ctrl+F5)            |
+| `config/title_rules.toml` | 해당 파일            | 재시작                         |
+| `.env`                    | `.env`           | 재시작                         |
+| DB 스키마(마이그레이션)            | 바이너리 (마이그레이션 내장) | 재시작 — DB 파일은 백업 후 유지        |
+| 카탈로그 DB 교체              | Deploy GUI로 `work/linvlib-catalog.db` | 백업 후 업로드. 마이그레이션 `008`–`012` 필요 |
+
 
 `migrations/`·소스·`target/` 전체는 서버에 올릴 필요 없습니다.
 
 ---
 
-## 8. DB 백업
 
-앱이 **실행 중에도** 백업할 수 있습니다. 내부적으로 SQLite `VACUUM INTO`로 일관된 스냅샷을 `backups/`에 저장합니다.
+
+## 8. 알라딘 자동 갱신 · DB 백업
 
 | 항목 | 값 |
-|------|-----|
-| 자동 시각 | 매일 **KST 자정** (날짜가 바뀌면 1회) |
-| 보관 | **14일** (`BACKUP_RETAIN_DAYS`, 기본 14) |
-| 디렉터리 | `~/linvlib/backups` (`BACKUP_DIR`, 기본 `backups`) |
-| 관리 UI | 관리 탭 → **백업** (목록·지금 백업·다운로드·삭제) |
+| --- | --- |
+| 신간 갱신 | 매일 **KST 23:30** 시작 · **자정에 중단** · soft 쿼터 잔량만 사용 |
+| 갱신 대상 | `ongoing`, `complete_partial` (수동 시리즈 제외) |
+| DB 백업 | 매일 **KST 자정** 1회 |
+| 백업 보관 | **14일** (`BACKUP_RETAIN_DAYS`, 기본 14) |
+| 백업 디렉터리 | `~/linvlib/backups` (`BACKUP_DIR`, 기본 `backups`) |
+| 관리 UI | 관리 탭 → 쿼터·갱신 상태 / **백업** |
+
+
+앱이 **실행 중에도** 백업할 수 있습니다. 내부적으로 SQLite `VACUUM INTO`로 일관된 스냅샷을 `backups/`에 저장합니다.
 
 선택 env (서버 `.env`):
 
@@ -335,16 +375,3 @@ scp -i $KEY ubuntu@${IP}:~/linvlib/backups/linvlib-YYYYMMDD-HHMMSS.db .
 
 ---
 
-## 9. 로컬 배포 GUI (빌드·업로드·재시작)
-
-터미널 대신 PC 브라우저에서 배포하려면:
-
-```powershell
-cd tools\deploy-gui
-copy config.example.json config.json
-# config.json 에서 키·IP·repo 경로 확인
-python server.py
-```
-
-http://127.0.0.1:8765 에서 **바이너리 / static / 제목 규칙**을 고른 뒤 배포·재시작·상태·로그·원격 백업을 실행할 수 있습니다.  
-자세한 설명은 `tools/deploy-gui/README.md`를 보세요.

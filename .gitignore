@@ -11,13 +11,16 @@ linvlib.db-*
 *.db-shm
 *.db-wal
 /backups/
+/work/
 
 # Local deploy GUI secrets
 tools/deploy-gui/config.json
+tools/deploy-gui/_uploads/
 
 # OS / editor
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Frontend tooling (if added later)
 node_modules/

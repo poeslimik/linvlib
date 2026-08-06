@@ -38,8 +38,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/series/{id}/reads", put(handlers::series::save_reads))
         .route("/series/{id}/rating", put(handlers::series::save_rating))
         .route(
-            "/series/{id}/complete",
-            put(handlers::series::set_series_complete),
+            "/series/{id}/publish-status",
+            put(handlers::series::set_series_publish_status),
         )
         .route(
             "/series/{id}/volumes/order",

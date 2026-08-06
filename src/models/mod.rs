@@ -5,6 +5,50 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
+/// Valid `series.publish_status` values.
+pub const PUBLISH_STATUSES: &[&str] = &[
+    "complete",
+    "complete_partial",
+    "complete_stalled",
+    "ongoing",
+    "ongoing_stalled",
+    "hiatus",
+    "hiatus_done",
+];
+
+/// Statuses that still expect Aladin new-volume checks.
+pub const PUBLISH_STATUSES_FOR_REFRESH: &[&str] = &["ongoing", "complete_partial"];
+
+pub fn normalize_publish_status(raw: &str) -> Option<&'static str> {
+    match raw.trim() {
+        "complete" => Some("complete"),
+        "complete_partial" => Some("complete_partial"),
+        "complete_stalled" => Some("complete_stalled"),
+        "ongoing" => Some("ongoing"),
+        "ongoing_stalled" => Some("ongoing_stalled"),
+        "hiatus" => Some("hiatus"),
+        "hiatus_done" => Some("hiatus_done"),
+        _ => None,
+    }
+}
+
+pub fn publish_status_skips_bulk_refresh(status: &str) -> bool {
+    !PUBLISH_STATUSES_FOR_REFRESH.contains(&status)
+}
+
+pub fn publish_status_label(status: &str) -> &'static str {
+    match status {
+        "complete" => "완결",
+        "complete_partial" => "완결(번역 미완)",
+        "complete_stalled" => "완결(번역 중단)",
+        "ongoing" => "연재중",
+        "ongoing_stalled" => "연재중(번역 중단)",
+        "hiatus" => "연재 중단(번역 미완)",
+        "hiatus_done" => "연재 중단",
+        _ => "연재중",
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum Rating {
@@ -112,9 +156,9 @@ pub struct SeriesRow {
     pub latest_published_at: Option<String>,
     pub created_at: String,
     #[sqlx(default)]
-    pub is_complete: i64,
-    #[sqlx(default)]
     pub cover_url: Option<String>,
+    #[sqlx(default)]
+    pub publish_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,12 +171,15 @@ pub struct Series {
     pub first_published_at: Option<DateTime<Utc>>,
     pub latest_published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    pub is_complete: bool,
+    pub publish_status: String,
     pub cover_url: Option<String>,
 }
 
 impl SeriesRow {
     pub fn into_series(self) -> AppResult<Series> {
+        let publish_status = normalize_publish_status(&self.publish_status)
+            .unwrap_or("ongoing")
+            .to_string();
         Ok(Series {
             id: parse_uuid(&self.id)?,
             title: self.title,
@@ -150,7 +197,7 @@ impl SeriesRow {
                 .map(parse_datetime)
                 .transpose()?,
             created_at: parse_datetime(&self.created_at)?,
-            is_complete: self.is_complete != 0,
+            publish_status,
             cover_url: self
                 .cover_url
                 .filter(|s| !s.trim().is_empty()),
@@ -168,6 +215,8 @@ pub struct VolumeRow {
     pub published_at: Option<String>,
     pub aladin_item_id: String,
     pub isbn13: Option<String>,
+    #[sqlx(default)]
+    pub is_unreleased: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +229,8 @@ pub struct Volume {
     pub published_at: Option<NaiveDate>,
     pub aladin_item_id: String,
     pub isbn13: Option<String>,
+    /// True when filled from a JP edition without a Korean release.
+    pub is_unreleased: bool,
 }
 
 impl VolumeRow {
@@ -197,6 +248,7 @@ impl VolumeRow {
                 .transpose()?,
             aladin_item_id: self.aladin_item_id,
             isbn13: self.isbn13,
+            is_unreleased: self.is_unreleased != 0,
         })
     }
 }
@@ -312,6 +364,7 @@ pub struct VolumeWithRead {
     pub cover_url: Option<String>,
     pub published_at: Option<NaiveDate>,
     pub is_read: bool,
+    pub is_unreleased: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -322,7 +375,7 @@ pub struct SeriesDetailResponse {
     pub publisher: Option<String>,
     pub aladin_series_id: String,
     pub is_manual: bool,
-    pub is_complete: bool,
+    pub publish_status: String,
     pub first_published_at: Option<DateTime<Utc>>,
     pub latest_published_at: Option<DateTime<Utc>>,
     /// Stored series representative cover (may be null → UI falls back to latest volume)
@@ -360,7 +413,7 @@ pub struct SeriesListItem {
     pub total_volumes: i64,
     pub read_volumes: i64,
     pub progress_percent: i32,
-    pub is_complete: bool,
+    pub publish_status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,6 +466,9 @@ pub struct ManualVolumeInput {
     pub title: Option<String>,
     pub published_at: Option<String>,
     pub cover_url: Option<String>,
+    /// JP-only fill without Korean release (미정발)
+    #[serde(default)]
+    pub is_unreleased: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,8 +488,8 @@ pub struct ManualSeriesRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SetSeriesCompleteRequest {
-    pub is_complete: bool,
+pub struct SetSeriesPublishStatusRequest {
+    pub publish_status: String,
 }
 
 #[derive(Debug, Deserialize)]

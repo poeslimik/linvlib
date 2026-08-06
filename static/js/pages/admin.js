@@ -107,7 +107,7 @@ export async function renderAdmin(root) {
       <section class="panel" aria-labelledby="admin-status-title">
         <div class="admin-section-head">
           <h2 id="admin-status-title">상태</h2>
-          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" title="완결 표시된 작품은 제외됩니다">지금 신간 갱신</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" title="연재중·완결(번역 미완)만 대상. 완결·번역 중단·연재 중단 등은 제외">지금 신간 갱신</button>
         </div>
         <dl class="detail-facts">
           <div><dt>서버 시각</dt><dd>${escapeHtml(status.server_time_kst || "—")}</dd></div>
@@ -128,7 +128,7 @@ export async function renderAdmin(root) {
                 .join(" · ")}</p>`
             : ""
         }
-        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 23:50에 남은 소프트 쿼터로 신간 갱신, 자정에 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 23:30에 남은 소프트 쿼터로 신간 갱신(자정에 중단), 자정에 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
       </section>`;
   }
 

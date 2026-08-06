@@ -12,7 +12,8 @@ use crate::{
 
 /// Series row columns for `SeriesRow` queries.
 const SERIES_COLS: &str = "id, title, author, publisher, aladin_series_id, \
-     first_published_at, latest_published_at, created_at, is_complete, cover_url";
+     first_published_at, latest_published_at, created_at, cover_url, \
+     COALESCE(publish_status, 'ongoing') AS publish_status";
 
 /// Display cover: series.cover_url first, else latest volume that has a cover.
 const SERIES_DISPLAY_COVER_SQL: &str = r#"
@@ -352,8 +353,148 @@ pub async fn find_series_by_aladin_id(
     .bind(aladin_series_id)
     .fetch_optional(pool)
     .await?;
+    if let Some(row) = row {
+        return row.into_series().map(Some);
+    }
+
+    let row = sqlx::query_as::<_, SeriesRow>(
+        r#"
+        SELECT
+            s.id,
+            s.title,
+            s.author,
+            s.publisher,
+            s.aladin_series_id,
+            s.first_published_at,
+            s.latest_published_at,
+            s.created_at,
+            s.cover_url,
+            COALESCE(s.publish_status, 'ongoing') AS publish_status
+        FROM series s
+        INNER JOIN series_aladin_aliases a ON a.series_id = s.id
+        WHERE a.aladin_series_id = ?
+        "#,
+    )
+    .bind(aladin_series_id)
+    .fetch_optional(pool)
+    .await?;
 
     row.map(|r| r.into_series()).transpose()
+}
+
+pub async fn list_series_aladin_aliases(
+    pool: &SqlitePool,
+    series_id: Uuid,
+) -> AppResult<Vec<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT aladin_series_id FROM series_aladin_aliases WHERE series_id = ?")
+            .bind(series_id.to_string())
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+pub async fn add_series_aladin_alias(
+    pool: &SqlitePool,
+    series_id: Uuid,
+    aladin_series_id: &str,
+) -> AppResult<()> {
+    let key = aladin_series_id.trim();
+    if key.is_empty() || key.starts_with("manual:") {
+        return Ok(());
+    }
+    if let Some(current) = find_series_by_id(pool, series_id).await? {
+        if current.aladin_series_id == key {
+            return Ok(());
+        }
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO series_aladin_aliases (aladin_series_id, series_id)
+        VALUES (?, ?)
+        ON CONFLICT(aladin_series_id) DO UPDATE SET series_id = excluded.series_id
+        "#,
+    )
+    .bind(key)
+    .bind(series_id.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Move Aladin identities from a merged-away series onto the surviving series.
+pub async fn absorb_series_aladin_identities(
+    pool: &SqlitePool,
+    source_id: Uuid,
+    target_id: Uuid,
+) -> AppResult<()> {
+    let source = find_series_by_id(pool, source_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("source series not found".into()))?;
+    let target = find_series_by_id(pool, target_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("target series not found".into()))?;
+
+    let mut incoming = list_series_aladin_aliases(pool, source_id).await?;
+    if !source.aladin_series_id.starts_with("manual:") {
+        incoming.push(source.aladin_series_id.clone());
+    }
+
+    sqlx::query("DELETE FROM series_aladin_aliases WHERE series_id = ?")
+        .bind(source_id.to_string())
+        .execute(pool)
+        .await?;
+
+    let mut target_key = target.aladin_series_id.clone();
+    if target_key.starts_with("manual:") {
+        if let Some(first) = incoming
+            .iter()
+            .find(|key| !key.starts_with("manual:"))
+            .cloned()
+        {
+            sqlx::query("UPDATE series SET aladin_series_id = ? WHERE id = ?")
+                .bind(format!("manual:{source_id}:merged"))
+                .bind(source_id.to_string())
+                .execute(pool)
+                .await?;
+            sqlx::query("UPDATE series SET aladin_series_id = ? WHERE id = ?")
+                .bind(&first)
+                .bind(target_id.to_string())
+                .execute(pool)
+                .await?;
+            target_key = first.clone();
+            incoming.retain(|key| key != &first);
+        }
+    }
+
+    for key in incoming {
+        if key == target_key || key.starts_with("manual:") {
+            continue;
+        }
+        add_series_aladin_alias(pool, target_id, &key).await?;
+    }
+    Ok(())
+}
+
+pub async fn remove_series_aladin_aliases(
+    pool: &SqlitePool,
+    series_id: Uuid,
+    keys: &[String],
+) -> AppResult<()> {
+    for key in keys {
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        sqlx::query(
+            "DELETE FROM series_aladin_aliases WHERE series_id = ? AND aladin_series_id = ?",
+        )
+        .bind(series_id.to_string())
+        .bind(key)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn upsert_series(
@@ -445,7 +586,7 @@ pub async fn upsert_volume(
 
     let existing_item = sqlx::query_as::<_, VolumeRow>(
         r#"
-        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         FROM volumes
         WHERE aladin_item_id = ?
         "#,
@@ -471,7 +612,7 @@ pub async fn upsert_volume(
                 END,
                 isbn13 = COALESCE(isbn13, ?)
             WHERE id = ?
-            RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+            RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
             "#,
         )
         .bind(cover_url)
@@ -489,9 +630,9 @@ pub async fn upsert_volume(
 
     let row = sqlx::query_as::<_, VolumeRow>(
         r#"
-        INSERT INTO volumes (id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        INSERT INTO volumes (id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         "#,
     )
     .bind(id.to_string())
@@ -511,7 +652,7 @@ pub async fn upsert_volume(
 pub async fn find_volume_by_id(pool: &SqlitePool, id: Uuid) -> AppResult<Option<Volume>> {
     let row = sqlx::query_as::<_, VolumeRow>(
         r#"
-        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         FROM volumes
         WHERE id = ?
         "#,
@@ -528,7 +669,7 @@ pub async fn find_volume_by_aladin_item_id(
 ) -> AppResult<Option<Volume>> {
     let row = sqlx::query_as::<_, VolumeRow>(
         r#"
-        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         FROM volumes
         WHERE aladin_item_id = ?
         "#,
@@ -675,7 +816,7 @@ pub async fn list_volumes(
 
     let query = format!(
         r#"
-        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        SELECT id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         FROM volumes
         WHERE series_id = ?
         {order_clause}
@@ -810,19 +951,26 @@ pub async fn canonicalize_series_identity(
     row.into_series()
 }
 
-pub async fn set_series_complete(
+pub async fn set_series_publish_status(
     pool: &SqlitePool,
     series_id: Uuid,
-    is_complete: bool,
+    publish_status: &str,
 ) -> AppResult<Series> {
+    let status = crate::models::normalize_publish_status(publish_status).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "invalid publish_status (expected one of: {})",
+            crate::models::PUBLISH_STATUSES.join(", ")
+        ))
+    })?;
     let row = sqlx::query_as::<_, SeriesRow>(&format!(
         r#"
-        UPDATE series SET is_complete = ?
+        UPDATE series
+        SET publish_status = ?
         WHERE id = ?
         RETURNING {SERIES_COLS}
         "#
     ))
-    .bind(if is_complete { 1 } else { 0 })
+    .bind(status)
     .bind(series_id.to_string())
     .fetch_optional(pool)
     .await?
@@ -851,13 +999,14 @@ pub async fn insert_manual_volume(
     title: &str,
     cover_url: Option<&str>,
     published_at: Option<NaiveDate>,
+    is_unreleased: bool,
 ) -> AppResult<Volume> {
     let published = published_at.map(format_date);
     let row = sqlx::query_as::<_, VolumeRow>(
         r#"
-        INSERT INTO volumes (id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13)
-        VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        INSERT INTO volumes (id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         "#,
     )
     .bind(id.to_string())
@@ -867,6 +1016,7 @@ pub async fn insert_manual_volume(
     .bind(cover_url)
     .bind(&published)
     .bind(format!("manual-vol:{id}"))
+    .bind(if is_unreleased { 1 } else { 0 })
     .fetch_one(pool)
     .await?;
 
@@ -881,6 +1031,7 @@ pub async fn update_manual_volume(
     title: &str,
     cover_url: Option<&str>,
     published_at: Option<NaiveDate>,
+    is_unreleased: bool,
 ) -> AppResult<Volume> {
     let published = published_at.map(format_date);
     let row = sqlx::query_as::<_, VolumeRow>(
@@ -889,15 +1040,17 @@ pub async fn update_manual_volume(
             volume_number = ?,
             title = ?,
             cover_url = ?,
-            published_at = ?
+            published_at = ?,
+            is_unreleased = ?
         WHERE id = ? AND series_id = ?
-        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13
+        RETURNING id, series_id, volume_number, title, cover_url, published_at, aladin_item_id, isbn13, is_unreleased
         "#,
     )
     .bind(volume_number)
     .bind(title)
     .bind(cover_url)
     .bind(&published)
+    .bind(if is_unreleased { 1 } else { 0 })
     .bind(id.to_string())
     .bind(series_id.to_string())
     .fetch_optional(pool)
@@ -1170,7 +1323,7 @@ pub struct SeriesListRow {
     pub latest_cover_url: Option<String>,
     pub total_volumes: i64,
     pub read_volumes: i64,
-    pub is_complete: bool,
+    pub publish_status: String,
 }
 
 pub async fn list_series(
@@ -1219,7 +1372,7 @@ pub async fn list_series(
                 s.id,
                 s.title,
                 s.latest_published_at,
-                COALESCE(s.is_complete, 0) AS is_complete,
+                COALESCE(NULLIF(TRIM(s.publish_status), ''), 'ongoing') AS publish_status,
                 {SERIES_DISPLAY_COVER_SQL} AS cover,
                 (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS total_volumes,
                 (
@@ -1281,7 +1434,7 @@ pub async fn list_series(
 
     let list_sql = format!(
         "{base_cte}
-         SELECT base.id, base.title, base.cover, base.total_volumes, base.read_volumes, base.is_complete
+         SELECT base.id, base.title, base.cover, base.total_volumes, base.read_volumes, base.publish_status
          FROM base
          {join_sql}
          WHERE {title_sql} AND ({status_sql})
@@ -1290,7 +1443,7 @@ pub async fn list_series(
     );
 
     let mut list_q =
-        sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64)>(&list_sql)
+        sqlx::query_as::<_, (String, String, Option<String>, i64, i64, String)>(&list_sql)
             .bind(user_id.to_string())
             .bind(user_id.to_string());
     if sort == "recently_read" {
@@ -1304,14 +1457,16 @@ pub async fn list_series(
 
     let items = rows
         .into_iter()
-        .filter_map(|(id, title, cover, total_volumes, read_volumes, is_complete)| {
+        .filter_map(|(id, title, cover, total_volumes, read_volumes, publish_status)| {
             Uuid::parse_str(&id).ok().map(|id| SeriesListRow {
                 id,
                 title,
                 latest_cover_url: cover,
                 total_volumes,
                 read_volumes,
-                is_complete: is_complete != 0,
+                publish_status: crate::models::normalize_publish_status(&publish_status)
+                    .unwrap_or("ongoing")
+                    .to_string(),
             })
         })
         .collect();
@@ -1741,7 +1896,7 @@ pub async fn list_aladin_series_for_refresh(
         SELECT id, title, aladin_series_id
         FROM series
         WHERE aladin_series_id NOT LIKE 'manual:%'
-          AND COALESCE(is_complete, 0) = 0
+          AND COALESCE(publish_status, 'ongoing') IN ('ongoing', 'complete_partial')
         ORDER BY
             CASE WHEN last_refreshed_at IS NULL OR last_refreshed_at = '' THEN 0 ELSE 1 END,
             last_refreshed_at ASC,

@@ -23,6 +23,42 @@ export function formatDate(value) {
   return d;
 }
 
+/** @param {string} status */
+export function publishStatusLabel(status) {
+  switch (status) {
+    case "complete":
+      return "완결";
+    case "complete_partial":
+      return "완결(번역 미완)";
+    case "complete_stalled":
+      return "완결(번역 중단)";
+    case "ongoing_stalled":
+      return "연재중(번역 중단)";
+    case "hiatus":
+      return "연재 중단(번역 미완)";
+    case "hiatus_done":
+      return "연재 중단";
+    case "ongoing":
+    default:
+      return "연재중";
+  }
+}
+
+/** Full label in list/detail (same wording as the select). */
+export function publishStatusBadge(status) {
+  const s = status || "ongoing";
+  const label = publishStatusLabel(s);
+  const kind =
+    s === "ongoing"
+      ? "ongoing"
+      : s.includes("stalled") || s === "hiatus"
+        ? "stalled"
+        : s.startsWith("complete") || s === "hiatus_done"
+          ? "complete"
+          : "ongoing";
+  return ` <span class="badge-publish badge-publish--${kind}">${escapeHtml(label)}</span>`;
+}
+
 export function aladinSearchUrl(title) {
   return `https://www.aladin.co.kr/search/wsearchresult.aspx?SearchTarget=Book&SearchWord=${encodeURIComponent(title || "")}`;
 }

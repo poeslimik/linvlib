@@ -33,6 +33,7 @@ pub async fn get_series_detail(
             cover_url: v.cover_url.clone(),
             published_at: v.published_at,
             is_read: read_map.get(&v.id).copied().unwrap_or(false),
+            is_unreleased: v.is_unreleased,
         })
         .collect();
 
@@ -55,7 +56,7 @@ pub async fn get_series_detail(
         publisher: series.publisher,
         aladin_series_id: series.aladin_series_id,
         is_manual,
-        is_complete: series.is_complete,
+        publish_status: series.publish_status.clone(),
         first_published_at: series.first_published_at,
         latest_published_at: series.latest_published_at,
         cover_url: series.cover_url.clone(),
@@ -175,7 +176,7 @@ pub async fn list_series(
                 total_volumes: row.total_volumes,
                 read_volumes: row.read_volumes,
                 progress_percent,
-                is_complete: row.is_complete,
+                publish_status: row.publish_status.clone(),
             }
         })
         .collect();

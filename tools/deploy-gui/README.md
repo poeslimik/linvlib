@@ -18,11 +18,15 @@ notepad config.json
 
 ## 실행
 
+**가장 간단:** `tools\deploy-gui\start.bat` 을 더블클릭합니다.  
+서버가 뜨고 브라우저가 http://127.0.0.1:8765 로 열립니다. (창을 닫으면 서버 종료)
+
+또는:
+
 ```powershell
+cd tools\deploy-gui
 python server.py
 ```
-
-브라우저에서 http://127.0.0.1:8765 를 엽니다.
 
 ## 기능
 
@@ -30,5 +34,6 @@ python server.py
 - WSL `cargo build --release`
 - `scp` 업로드, 바이너리 시 `systemctl stop` → 업로드 → `restart`
 - SSH 테스트, 서비스 상태, journal 로그, 원격 즉시 백업
+- **로컬 `.db` 업로드**: 원격 백업 → stop → `linvlib.db` 교체 → WAL/SHM 정리 → 재시작
 
-localhost에만 bind 됩니다.
+localhost에만 bind 됩니다. 스테이징 파일은 `tools/deploy-gui/_uploads/`에 잠시 저장됩니다.

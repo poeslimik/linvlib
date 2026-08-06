@@ -1,9 +1,23 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
 import { onBeforeLeave } from "../router.js";
-import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, aladinSearchUrl } from "../ui.js";
+import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, aladinSearchUrl, publishStatusBadge, publishStatusLabel } from "../ui.js";
 
 const RATINGS = ["None", "S", "A", "B", "C", "D", "F"];
+
+const PUBLISH_STATUSES = [
+  { value: "complete", label: "완결" },
+  { value: "complete_partial", label: "완결(번역 미완)" },
+  { value: "complete_stalled", label: "완결(번역 중단)" },
+  { value: "ongoing", label: "연재중" },
+  { value: "ongoing_stalled", label: "연재중(번역 중단)" },
+  { value: "hiatus", label: "연재 중단(번역 미완)" },
+  { value: "hiatus_done", label: "연재 중단" },
+];
+
+function currentPublishStatus(series) {
+  return series.publish_status || "ongoing";
+}
 
 function formatVolumeTitle(title = "") {
   return title.replace(/사족\s+편/g, "사족편");
@@ -79,6 +93,13 @@ function formatVolumeLabel(volumeNumber, title = "", sssCount = 1, exCount = 1, 
       if (story >= 1) return `${story}부 ${body}`;
       return body;
     }
+    const hyphenVol = withoutArc.match(/(?:\s|\.)(\d+)\s*[-–—]\s*(\d+)(?=\s|$|권|[-–—,，)])/);
+    if (hyphenVol) {
+      const body = `${hyphenVol[1]}-${hyphenVol[2]}권`;
+      if (year >= 2) return `${year}학년 ${body}`;
+      if (story >= 1) return `${story}부 ${body}`;
+      return body;
+    }
     const vol =
       withoutArc.match(/(?:제)?(\d+(?:\.\d+)?)\s*권/) ||
       withoutArc.match(/(?:\s|\.)(\d+(?:\.\d+)?)\s*(?:권)?\s*[-–—:,，(]/) ||
@@ -100,6 +121,7 @@ function volumeDateValue(publishedAt) {
 }
 
 function editVolumeRowHtml(vol = {}, idx = 0) {
+  const unreleased = !!vol.is_unreleased;
   return `
     <div class="manual-vol-row manual-vol-row--edit" data-idx="${idx}" data-vid="${escapeAttr(vol.id || "")}">
       <span class="manual-vol-drag" title="끌어서 순서 변경" draggable="false" aria-hidden="true">⠿</span>
@@ -110,6 +132,10 @@ function editVolumeRowHtml(vol = {}, idx = 0) {
       <input type="text" class="manual-vol-title" value="${escapeAttr(vol.title || "")}" placeholder="권 제목" />
       <input type="date" class="manual-vol-date" value="${escapeAttr(volumeDateValue(vol.published_at))}" title="출간일" />
       <input type="url" class="manual-vol-cover" value="${escapeAttr(vol.cover_url || "")}" placeholder="표지 URL" title="표지 URL" />
+      <label class="manual-vol-unreleased" title="현지 발매만 있고 국내 정식 출간 없음">
+        <input type="checkbox" class="manual-vol-unreleased-check" ${unreleased ? "checked" : ""} />
+        미정발
+      </label>
       <button type="button" class="btn btn--ghost btn--sm" data-remove-vol>삭제</button>
     </div>`;
 }
@@ -196,10 +222,17 @@ export async function renderSeriesDetail(root, { id }) {
     const sajokCount = series.volumes.filter((v) => /사족\s*편/.test(v.title || "")).length;
 
     const isAdmin = !!getUser()?.is_admin;
+    const pubStatus = currentPublishStatus(series);
     const completeToggle = isAdmin
-      ? `<button type="button" class="btn btn--ghost btn--sm" id="toggle-complete" title="일괄·자동 갱신 제외 여부">
-           ${series.is_complete ? "연재중으로" : "완결 표시"}
-         </button>`
+      ? `<label class="publish-status-field" title="연재중·완결(번역 미완)만 일괄 갱신 대상">
+           <span class="visually-hidden">발매 상태</span>
+           <select id="publish-status-select" aria-label="발매 상태">
+             ${PUBLISH_STATUSES.map(
+               (o) =>
+                 `<option value="${o.value}" ${o.value === pubStatus ? "selected" : ""}>${escapeHtml(o.label)}</option>`
+             ).join("")}
+           </select>
+         </label>`
       : "";
     const actionButtons = isAdmin
       ? `<button type="button" class="btn btn--ghost btn--sm" id="edit-catalog">${editing ? "수정 닫기" : "수정"}</button>
@@ -276,7 +309,10 @@ export async function renderSeriesDetail(root, { id }) {
               ${escapeHtml(series.author || "작가 미상")}
               ${series.publisher ? ` · ${escapeHtml(series.publisher)}` : ""}
               ${series.is_manual ? ` · <span class="badge-manual">직접 등록</span>` : ""}
-              ${series.is_complete ? ` · <span class="badge-complete">완결</span>` : ""}
+          ${(() => {
+            const b = publishStatusBadge(currentPublishStatus(series));
+            return b ? ` ·${b}` : "";
+          })()}
             </p>
             <p class="source-line">
               출처: <a href="${aladinSearchUrl(series.title)}" target="_blank" rel="noopener noreferrer">알라딘에서 검색</a>
@@ -331,7 +367,7 @@ export async function renderSeriesDetail(root, { id }) {
                 ${cover(v.cover_url, formatVolumeTitle(v.title), "cover cover--sm")}
                 <div class="volume-item__meta">
                   <h3>${escapeHtml(formatVolumeTitle(v.title))}</h3>
-                  <p>${formatVolumeLabel(v.volume_number, v.title, sssCount, exCount, sajokCount)} · ${formatDate(v.published_at)}</p>
+                  <p>${formatVolumeLabel(v.volume_number, v.title, sssCount, exCount, sajokCount)} · ${formatDate(v.published_at)}${v.is_unreleased ? ` <span class="badge-unreleased" title="현지 발매 · 국내 미정발">미정발</span>` : ""}</p>
                 </div>
               </li>`
               )
@@ -482,9 +518,17 @@ export async function renderSeriesDetail(root, { id }) {
 
     root.querySelector("#edit-add-vol")?.addEventListener("click", () => {
       const idx = volsBox.querySelectorAll(".manual-vol-row").length;
+      const status = currentPublishStatus(series);
+      const defaultUnreleased =
+        status === "ongoing_stalled" ||
+        status === "complete_stalled" ||
+        status === "complete_partial";
       volsBox.insertAdjacentHTML(
         "beforeend",
-        editVolumeRowHtml({ volume_number: idx + 1 }, idx)
+        editVolumeRowHtml(
+          { volume_number: idx + 1, is_unreleased: defaultUnreleased },
+          idx
+        )
       );
       bindRemove();
       const newRow = volsBox.lastElementChild;
@@ -589,6 +633,7 @@ export async function renderSeriesDetail(root, { id }) {
           title: row.querySelector(".manual-vol-title").value.trim() || null,
           published_at: row.querySelector(".manual-vol-date").value || null,
           cover_url: row.querySelector(".manual-vol-cover").value.trim() || null,
+          is_unreleased: !!row.querySelector(".manual-vol-unreleased-check")?.checked,
         };
       });
       const saveBtn = root.querySelector("#edit-save");
@@ -721,14 +766,17 @@ export async function renderSeriesDetail(root, { id }) {
       });
     }
 
-    root.querySelector("#toggle-complete")?.addEventListener("click", async () => {
-      const next = !series.is_complete;
+    root.querySelector("#publish-status-select")?.addEventListener("change", async (e) => {
+      const next = e.target.value;
+      const prev = currentPublishStatus(series);
+      if (next === prev) return;
       try {
-        const res = await api.setSeriesComplete(id, next);
-        series.is_complete = !!res.is_complete;
-        toast(series.is_complete ? "완결로 표시했습니다 (일괄·자동 갱신 제외)" : "연재중으로 표시했습니다", "ok");
+        const res = await api.setSeriesPublishStatus(id, next);
+        series.publish_status = res.publish_status || next;
+        toast(`${publishStatusLabel(series.publish_status)}(으)로 표시했습니다`, "ok");
         paint();
       } catch (ex) {
+        e.target.value = prev;
         toast(ex.message, "error");
       }
     });

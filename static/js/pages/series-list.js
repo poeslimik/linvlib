@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
-import { shell, cover, escapeHtml, toast, bindLogout } from "../ui.js";
+import { shell, cover, escapeHtml, toast, bindLogout, publishStatusBadge } from "../ui.js";
 
 const SORTS = [
   { value: "latest", label: "최신순" },
@@ -48,7 +48,7 @@ export async function renderSeriesList(root) {
           <h1>작품 목록</h1>
           ${
             getUser()?.is_admin
-              ? `<button type="button" class="btn btn--ghost btn--sm" id="refresh-all-aladin" title="완결 표시된 작품을 제외하고 알라딘 권 목록을 다시 가져옵니다">
+              ? `<button type="button" class="btn btn--ghost btn--sm" id="refresh-all-aladin" title="완결·번역 중단 작품을 제외하고 알라딘 권 목록을 다시 가져옵니다">
             알라딘 신간 갱신
           </button>`
               : ""
@@ -148,9 +148,9 @@ export async function renderSeriesList(root) {
         <span class="series-row__rank">${item.rank}</span>
         ${cover(item.latest_cover_url, item.title, "cover cover--md")}
         <div class="series-row__meta">
-          <h2 class="series-row__title">${escapeHtml(item.title)}${
-            item.is_complete ? ` <span class="badge-complete">완결</span>` : ""
-          }</h2>
+          <h2 class="series-row__title">${escapeHtml(item.title)}${publishStatusBadge(
+            item.publish_status || "ongoing"
+          )}</h2>
           <p class="series-row__stats">
             ${item.read_volumes} / ${item.total_volumes}권 · ${item.progress_percent}%
           </p>

@@ -119,6 +119,7 @@ pub async fn update_series(
                 &vol_title,
                 cover,
                 published,
+                vol.is_unreleased,
             )
             .await?;
         } else {
@@ -130,6 +131,7 @@ pub async fn update_series(
                 &vol_title,
                 cover,
                 published,
+                vol.is_unreleased,
             )
             .await?;
         }
@@ -288,6 +290,13 @@ pub async fn merge_series(state: &AppState, body: MergeSeriesRequest) -> AppResu
     )
     .await?;
 
+    repositories::absorb_series_aladin_identities(
+        &state.pool,
+        body.source_series_id,
+        body.target_series_id,
+    )
+    .await?;
+
     repositories::delete_series(&state.pool, body.source_series_id).await?;
     repositories::refresh_series_publish_dates(&state.pool, body.target_series_id).await?;
 
@@ -314,6 +323,26 @@ pub async fn split_volumes(
     }
 
     manual::ensure_title_available_pub(&state.pool, title, None, body.force).await?;
+
+    if let Some(first_id) = body.volume_ids.first() {
+        if let Some(volume) = repositories::find_volume_by_id(&state.pool, *first_id).await? {
+            let rules = state.title_rules.as_ref();
+            let mut drop_keys = vec![format!(
+                "title:{}",
+                rules.normalize_series_title(title)
+            )];
+            for volume_id in &body.volume_ids {
+                if let Some(vol) = repositories::find_volume_by_id(&state.pool, *volume_id).await? {
+                    let key = format!("title:{}", rules.normalize_series_title(&vol.title));
+                    if key != "title:" {
+                        drop_keys.push(key);
+                    }
+                }
+            }
+            repositories::remove_series_aladin_aliases(&state.pool, volume.series_id, &drop_keys)
+                .await?;
+        }
+    }
 
     let series_id = Uuid::new_v4();
     let aladin_series_id = format!("manual:{series_id}");

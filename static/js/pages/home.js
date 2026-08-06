@@ -27,10 +27,34 @@ export async function renderHome(root) {
         </p>
       </div>
       <aside class="landing__visual" aria-hidden="true">
-        <div class="landing__spine landing__spine--1"></div>
-        <div class="landing__spine landing__spine--2"></div>
-        <div class="landing__spine landing__spine--3"></div>
-        <div class="landing__spine landing__spine--4"></div>
+        <div class="landing__spine landing__spine--1">
+          <div class="landing__cover">
+            <div class="landing__bars"><span></span><span></span><span></span></div>
+            <span class="landing__vol">1</span>
+          </div>
+          <div class="landing__obi"></div>
+        </div>
+        <div class="landing__spine landing__spine--2">
+          <div class="landing__cover">
+            <div class="landing__bars"><span></span><span></span><span></span></div>
+            <span class="landing__vol">3</span>
+          </div>
+          <div class="landing__obi"></div>
+        </div>
+        <div class="landing__spine landing__spine--3">
+          <div class="landing__cover">
+            <div class="landing__bars"><span></span><span></span><span></span></div>
+            <span class="landing__vol">2</span>
+          </div>
+          <div class="landing__obi"></div>
+        </div>
+        <div class="landing__spine landing__spine--4">
+          <div class="landing__cover">
+            <div class="landing__bars"><span></span><span></span><span></span></div>
+            <span class="landing__vol">4</span>
+          </div>
+          <div class="landing__obi"></div>
+        </div>
       </aside>
 
       <dialog class="auth-dialog" id="auth-dialog">
