@@ -99,6 +99,7 @@ pub async fn create_manual_series(
             vol.cover_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
             parse_date(vol.published_at.as_deref()),
             vol.is_unreleased,
+            vol.label.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         )
         .await?;
     }
@@ -191,6 +192,7 @@ fn normalize_volumes(
                 title: Some(format!("{title} {n}권")),
                 published_at: None,
                 cover_url: None,
+                label: None,
                 is_unreleased: false,
             })
             .collect();

@@ -3,8 +3,8 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        Rating, SaveRatingRequest, SaveReadsRequest, SeriesDetailResponse, SeriesListItem,
-        SeriesListResponse, VolumeWithRead,
+        Rating, SaveRatingRequest, SaveReadsRequest,         SeriesDetailResponse, SeriesListItem,
+        SeriesListResponse, SeriesSearchAlias, SearchBundlePeer, VolumeWithRead,
     },
     repositories,
     state::AppState,
@@ -34,6 +34,7 @@ pub async fn get_series_detail(
             published_at: v.published_at,
             is_read: read_map.get(&v.id).copied().unwrap_or(false),
             is_unreleased: v.is_unreleased,
+            label: v.label.clone(),
         })
         .collect();
 
@@ -48,6 +49,18 @@ pub async fn get_series_detail(
     let latest_cover_url = repositories::latest_cover_for_series(&state.pool, series_id).await?;
 
     let is_manual = crate::services::manual::is_manual_series_id(&series.aladin_series_id);
+
+    let search_aliases = repositories::list_search_aliases(&state.pool, series_id)
+        .await?
+        .into_iter()
+        .map(|(id, alias, source)| SeriesSearchAlias { id, alias, source })
+        .collect();
+
+    let search_bundle_peers = repositories::list_search_bundle_peers(&state.pool, series_id)
+        .await?
+        .into_iter()
+        .map(|(id, title)| SearchBundlePeer { id, title })
+        .collect();
 
     Ok(SeriesDetailResponse {
         id: series.id,
@@ -66,6 +79,8 @@ pub async fn get_series_detail(
         total_volumes,
         read_volumes,
         progress_percent,
+        search_aliases,
+        search_bundle_peers,
     })
 }
 
@@ -148,15 +163,33 @@ pub async fn list_series(
     state: &AppState,
     user_id: Uuid,
     sort: &str,
+    order: &str,
     page: i64,
     limit: i64,
     q: &str,
     status: &str,
+    read_f: &str,
+    rated_f: &str,
+    ps_in: &str,
+    ps_ex: &str,
 ) -> AppResult<SeriesListResponse> {
     let page = page.max(1);
     let limit = limit.clamp(1, 100);
-    let (rows, total) =
-        repositories::list_series(&state.pool, user_id, sort, page, limit, q, status).await?;
+    let (rows, total) = repositories::list_series(
+        &state.pool,
+        user_id,
+        sort,
+        order,
+        page,
+        limit,
+        q,
+        status,
+        read_f,
+        rated_f,
+        ps_in,
+        ps_ex,
+    )
+    .await?;
 
     let items = rows
         .into_iter()

@@ -11,9 +11,9 @@ use tokio_util::io::ReaderStream;
 use crate::{
     auth::AdminUser,
     error::{AppError, AppResult},
-    models::{AdminStatusResponse, UserResponse},
+    models::{AdminStatusResponse, BatchSearchAliasRequest, BatchSearchBundleRequest, UserResponse},
     repositories,
-    services::{aladin, backup, quota},
+    services::{aladin, backup, quota, search_keys},
     state::AppState,
 };
 
@@ -156,4 +156,31 @@ pub async fn download_backup(
             .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
     );
     Ok(res)
+}
+
+pub async fn batch_search_aliases(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Json(body): Json<BatchSearchAliasRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let count =
+        search_keys::add_admin_aliases_batch(&state, &body.alias, &body.series_ids).await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "alias": body.alias.trim(),
+        "series_count": count,
+    })))
+}
+
+pub async fn create_search_bundle(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Json(body): Json<BatchSearchBundleRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let bundle_id = search_keys::merge_search_bundle(&state, &body.series_ids).await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "bundle_id": bundle_id,
+        "series_count": body.series_ids.len(),
+    })))
 }

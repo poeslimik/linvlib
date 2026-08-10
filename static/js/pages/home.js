@@ -60,14 +60,17 @@ export async function renderHome(root) {
       <dialog class="auth-dialog" id="auth-dialog">
         <form class="auth-form" id="auth-form" method="dialog">
           <h2 id="auth-title">로그인</h2>
-          <label>
+          <label id="auth-email-label">
             <span>이메일</span>
             <input name="email" type="email" required autocomplete="email" />
           </label>
-          <label>
+          <label id="auth-password-label">
             <span>비밀번호</span>
             <input name="password" type="password" required minlength="8" autocomplete="current-password" />
           </label>
+          <p class="auth-forgot" id="auth-forgot-wrap">
+            <button type="button" class="auth-forgot__btn" id="auth-forgot">비밀번호 찾기</button>
+          </p>
           <div class="auth-consent" id="auth-consent" hidden>
             <label>
               <input name="accept_terms" type="checkbox" value="1" />
@@ -83,6 +86,7 @@ export async function renderHome(root) {
           <div class="auth-actions">
             <button type="button" class="btn btn--ghost" id="auth-cancel">닫기</button>
             <button type="button" class="btn btn--ghost" id="auth-resend" hidden>인증 메일 재발송</button>
+            <button type="button" class="btn btn--ghost" id="auth-back-login" hidden>로그인으로</button>
             <button type="submit" class="btn btn--primary" id="auth-submit">확인</button>
           </div>
         </form>
@@ -96,23 +100,39 @@ export async function renderHome(root) {
   const err = root.querySelector("#auth-error");
   const hint = root.querySelector("#auth-hint");
   const resendBtn = root.querySelector("#auth-resend");
+  const backLoginBtn = root.querySelector("#auth-back-login");
+  const forgotWrap = root.querySelector("#auth-forgot-wrap");
+  const passwordLabel = root.querySelector("#auth-password-label");
+  const passwordInput = form.querySelector('[name="password"]');
   const consent = root.querySelector("#auth-consent");
   let mode = "login";
   let lastEmail = "";
 
   function setMode(next) {
     mode = next;
-    title.textContent = mode === "login" ? "로그인" : "회원가입";
+    title.textContent =
+      mode === "login" ? "로그인" : mode === "register" ? "회원가입" : "비밀번호 찾기";
     err.hidden = true;
     hint.hidden = true;
     resendBtn.hidden = true;
+    backLoginBtn.hidden = mode !== "forgot";
+    forgotWrap.hidden = mode !== "login";
     const showConsent = mode === "register";
     consent.hidden = !showConsent;
     consent.classList.toggle("is-visible", showConsent);
     form.querySelector('[name="accept_terms"]').checked = false;
     form.querySelector('[name="accept_privacy"]').checked = false;
-    form.querySelector('[name="password"]').autocomplete =
-      mode === "login" ? "current-password" : "new-password";
+
+    const showPassword = mode !== "forgot";
+    passwordLabel.hidden = !showPassword;
+    passwordInput.required = showPassword;
+    passwordInput.disabled = !showPassword;
+    if (!showPassword) passwordInput.value = "";
+
+    passwordInput.autocomplete =
+      mode === "login" ? "current-password" : mode === "register" ? "new-password" : "off";
+    root.querySelector("#auth-submit").textContent =
+      mode === "forgot" ? "재설정 메일 보내기" : "확인";
   }
 
   root.querySelectorAll("[data-mode]").forEach((btn) => {
@@ -121,6 +141,18 @@ export async function renderHome(root) {
       setMode(btn.dataset.mode);
       dialog.showModal();
     });
+  });
+
+  root.querySelector("#auth-forgot").addEventListener("click", () => {
+    const email = String(new FormData(form).get("email") || "").trim();
+    setMode("forgot");
+    if (email) form.querySelector('[name="email"]').value = email;
+  });
+
+  backLoginBtn.addEventListener("click", () => {
+    const email = String(new FormData(form).get("email") || "").trim();
+    setMode("login");
+    if (email) form.querySelector('[name="email"]').value = email;
   });
 
   root.querySelector("#auth-cancel").addEventListener("click", () => dialog.close());
@@ -153,7 +185,15 @@ export async function renderHome(root) {
     const submit = root.querySelector("#auth-submit");
     submit.disabled = true;
     try {
-      if (mode === "login") {
+      if (mode === "forgot") {
+        const res = await api.forgotPassword(email);
+        hint.textContent = res.message || "메일을 확인해 주세요.";
+        if (res.reset_token) {
+          hint.innerHTML = `${escapeHtml(res.message)} <a href="/reset-password?token=${escapeHtml(res.reset_token)}">재설정하러 가기</a>`;
+        }
+        hint.hidden = false;
+        toast("안내 메일을 보냈습니다", "info");
+      } else if (mode === "login") {
         const res = await api.login(email, password);
         setAuth(res.access_token);
         const me = await api.me();
@@ -193,7 +233,7 @@ export async function renderHome(root) {
     } catch (ex) {
       err.textContent = escapeHtml(ex.message);
       err.hidden = false;
-      if (ex.status === 403) resendBtn.hidden = false;
+      if (ex.status === 403 && mode === "login") resendBtn.hidden = false;
     } finally {
       submit.disabled = false;
     }

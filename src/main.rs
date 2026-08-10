@@ -1,4 +1,7 @@
-use linvlib::{config::Config, routes, services::backup, services::scheduler, state::AppState};
+use linvlib::{
+    config::Config, routes, services::backup, services::scheduler, services::search_keys,
+    services::status_report, state::AppState,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -33,8 +36,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     linvlib::repositories::users::ensure_admin_by_email(&pool, &config.admin_email).await?;
 
     let state = AppState::new(pool, config.clone());
+    match search_keys::rebuild_all_auto_aliases(&state).await {
+        Ok(n) => tracing::info!(series = n, "rebuilt auto search aliases"),
+        Err(err) => tracing::warn!(error = %err, "failed to rebuild auto search aliases"),
+    }
     scheduler::spawn_midnight_refresh(state.clone());
     backup::spawn_daily_backup(state.clone());
+    status_report::spawn_daily_status_report(state.clone());
     let app = routes::create_router(state);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;

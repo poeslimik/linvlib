@@ -24,6 +24,8 @@ pub fn create_router(state: AppState) -> Router {
             "/auth/resend-verification",
             post(handlers::auth::resend_verification),
         )
+        .route("/auth/forgot-password", post(handlers::auth::forgot_password))
+        .route("/auth/reset-password", post(handlers::auth::reset_password))
         .route("/auth/me", get(handlers::auth::me).delete(handlers::auth::delete_account))
         .route(
             "/series",
@@ -40,6 +42,14 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/series/{id}/publish-status",
             put(handlers::series::set_series_publish_status),
+        )
+        .route(
+            "/series/{id}/aliases",
+            post(handlers::series::add_search_alias),
+        )
+        .route(
+            "/series/{id}/aliases/{alias_id}",
+            delete(handlers::series::delete_search_alias),
         )
         .route(
             "/series/{id}/volumes/order",
@@ -67,6 +77,14 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::admin::list_manual_series),
         )
         .route("/admin/refresh", post(handlers::admin::trigger_refresh))
+        .route(
+            "/admin/search-aliases",
+            post(handlers::admin::batch_search_aliases),
+        )
+        .route(
+            "/admin/search-bundles",
+            post(handlers::admin::create_search_bundle),
+        )
         .route("/admin/backups", get(handlers::admin::list_backups).post(handlers::admin::create_backup))
         .route(
             "/admin/backups/{name}",

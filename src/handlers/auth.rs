@@ -8,8 +8,9 @@ use crate::{
     auth::{self, AuthUser},
     error::{AppError, AppResult},
     models::{
-        AuthResponse, DeleteAccountRequest, LoginRequest, RegisterRequest, RegisterResponse,
-        ResendVerificationRequest, UserResponse, VerifyEmailRequest,
+        AuthResponse, DeleteAccountRequest, ForgotPasswordRequest, ForgotPasswordResponse,
+        LoginRequest, RegisterRequest, RegisterResponse, ResendVerificationRequest,
+        ResetPasswordRequest, UserResponse, VerifyEmailRequest,
     },
     repositories::users,
     services::{email, rate_limit::ClientIp},
@@ -88,6 +89,31 @@ pub async fn resend_verification(
         .check_resend(&ip, body.email.trim())?;
     let response = email::resend_verification(&state, &body.email).await?;
     Ok(Json(response))
+}
+
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<ForgotPasswordRequest>,
+) -> AppResult<Json<ForgotPasswordResponse>> {
+    state
+        .auth_rate_limiter
+        .check_forgot(&ip, body.email.trim())?;
+    let response = email::request_password_reset(&state, &body.email).await?;
+    Ok(Json(response))
+}
+
+pub async fn reset_password(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<ResetPasswordRequest>,
+) -> AppResult<Json<AuthResponse>> {
+    state.auth_rate_limiter.check_reset(&ip)?;
+    let (_user, access_token) = email::reset_password(&state, &body.token, &body.password).await?;
+    Ok(Json(AuthResponse {
+        access_token,
+        token_type: "Bearer",
+    }))
 }
 
 pub async fn me(AuthUser(user): AuthUser) -> Json<UserResponse> {

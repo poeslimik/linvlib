@@ -8,12 +8,13 @@ use rand::{Rng, distributions::Alphanumeric};
 
 use crate::{
     error::{AppError, AppResult},
-    models::{RegisterResponse, User},
+    models::{ForgotPasswordResponse, RegisterResponse, User},
     repositories::users,
     state::AppState,
 };
 
 pub const LEGAL_VERSION: &str = "2026-07-25";
+const RESET_TOKEN_HOURS: i64 = 2;
 
 pub fn new_verify_token() -> String {
     rand::thread_rng()
@@ -25,6 +26,12 @@ pub fn new_verify_token() -> String {
 
 pub fn verify_expiry_iso() -> String {
     (Utc::now() + Duration::hours(48))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+pub fn reset_expiry_iso() -> String {
+    (Utc::now() + Duration::hours(RESET_TOKEN_HOURS))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string()
 }
@@ -214,18 +221,125 @@ pub async fn verify_email(state: &AppState, token: &str) -> AppResult<(User, Str
     Ok((user, access_token))
 }
 
+/// Always returns the same message so callers cannot probe whether an email exists.
+pub async fn request_password_reset(
+    state: &AppState,
+    email: &str,
+) -> AppResult<ForgotPasswordResponse> {
+    let email = email.trim().to_lowercase();
+    let generic = ForgotPasswordResponse {
+        message: "가입된 이메일이면 비밀번호 재설정 안내를 보냈습니다. 메일함을 확인해 주세요."
+            .into(),
+        reset_token: None,
+    };
+    if email.is_empty() {
+        return Err(AppError::BadRequest("email is required".into()));
+    }
+
+    let Some(user) = users::find_by_email(&state.pool, &email).await? else {
+        return Ok(generic);
+    };
+    if !user.email_verified {
+        // Unverified accounts should use the verification flow, not password reset.
+        return Ok(generic);
+    }
+
+    let token = new_verify_token();
+    let expires = reset_expiry_iso();
+    users::set_reset_token(&state.pool, user.id, &token, &expires).await?;
+    send_password_reset_email(state, &user, &token).await?;
+
+    Ok(ForgotPasswordResponse {
+        message: generic.message,
+        reset_token: if state.config.email_dev_mode {
+            Some(token)
+        } else {
+            None
+        },
+    })
+}
+
+pub async fn reset_password(
+    state: &AppState,
+    token: &str,
+    password: &str,
+) -> AppResult<(User, String)> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(AppError::BadRequest("token is required".into()));
+    }
+    if password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "password must be at least 8 characters".into(),
+        ));
+    }
+
+    let password_hash = crate::auth::hash_password(password)?;
+    let user = users::reset_password_by_token(&state.pool, token, &password_hash)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest("유효하지 않거나 만료된 재설정 링크입니다".into())
+        })?;
+    let access_token = crate::auth::create_token(
+        user.id,
+        &state.config.jwt_secret,
+        state.config.jwt_expiry_hours,
+    )?;
+    Ok((user, access_token))
+}
+
 async fn send_verification_email(state: &AppState, user: &User, token: &str) -> AppResult<()> {
     let link = format!(
         "{}/verify?token={}",
         state.config.app_base_url,
         urlencoding_encode(token)
     );
+    send_plain_email(
+        state,
+        user,
+        "[linvlib] 이메일 인증",
+        &format!(
+            "linvlib 가입을 환영합니다.\n\n아래 링크를 열어 이메일을 인증해 주세요 (48시간 유효):\n{link}\n"
+        ),
+        "verification",
+        &link,
+    )
+    .await
+}
 
+async fn send_password_reset_email(state: &AppState, user: &User, token: &str) -> AppResult<()> {
+    let link = format!(
+        "{}/reset-password?token={}",
+        state.config.app_base_url,
+        urlencoding_encode(token)
+    );
+    send_plain_email(
+        state,
+        user,
+        "[linvlib] 비밀번호 재설정",
+        &format!(
+            "비밀번호 재설정을 요청하셨습니다.\n\n아래 링크에서 새 비밀번호를 설정해 주세요 ({RESET_TOKEN_HOURS}시간 유효):\n{link}\n\n요청하지 않았다면 이 메일을 무시하세요.\n"
+        ),
+        "password reset",
+        &link,
+    )
+    .await
+}
+
+async fn send_plain_email(
+    state: &AppState,
+    user: &User,
+    subject: &str,
+    body: &str,
+    kind: &str,
+    link: &str,
+) -> AppResult<()> {
     if state.config.smtp_host.is_none() {
         tracing::warn!(
             email = %user.email,
             %link,
-            "SMTP not configured; verification link logged (EMAIL_DEV_MODE)"
+            kind,
+            "SMTP not configured; auth link logged (EMAIL_DEV_MODE)"
         );
         return Ok(());
     }
@@ -246,11 +360,9 @@ async fn send_verification_email(state: &AppState, user: &User, token: &str) -> 
             .email
             .parse::<Mailbox>()
             .map_err(|e| AppError::Internal(format!("invalid recipient: {e}")))?)
-        .subject("[linvlib] 이메일 인증")
+        .subject(subject)
         .header(ContentType::TEXT_PLAIN)
-        .body(format!(
-            "linvlib 가입을 환영합니다.\n\n아래 링크를 열어 이메일을 인증해 주세요 (48시간 유효):\n{link}\n"
-        ))
+        .body(body.to_string())
         .map_err(|e| AppError::Internal(format!("email build error: {e}")))?;
 
     let host = state.config.smtp_host.as_deref().unwrap();

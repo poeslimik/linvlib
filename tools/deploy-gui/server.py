@@ -17,7 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
@@ -73,6 +73,7 @@ def run(cmd: list[str], cwd: str | None = None, timeout: int | None = None) -> i
         proc = subprocess.Popen(
             cmd,
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -93,6 +94,16 @@ def ssh_base() -> list[str]:
         "ssh",
         "-i",
         CFG["ssh_key"],
+        "-n",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=20",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
         "-o",
         "StrictHostKeyChecking=accept-new",
         f"{CFG['ssh_user']}@{CFG['ssh_host']}",
@@ -104,6 +115,10 @@ def scp_base() -> list[str]:
         "scp",
         "-i",
         CFG["ssh_key"],
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=20",
         "-o",
         "StrictHostKeyChecking=accept-new",
     ]
@@ -242,6 +257,136 @@ def do_upload_db(local_path: str, backup_first: bool, restart: bool) -> int:
     return 0
 
 
+def remote_capture(cmd: str, timeout: int = 45) -> tuple[int, str, str]:
+    """Run remote command; return (code, stdout, stderr). Does not log stdout."""
+    full = ssh_base() + [cmd]
+    try:
+        proc = subprocess.run(
+            full,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except Exception as exc:  # noqa: BLE001
+        return 1, "", str(exc)
+
+
+def local_env_path() -> Path:
+    return Path(CFG["repo_dir"]) / ".env"
+
+
+def remote_env_path() -> str:
+    return f"{CFG['remote_dir'].rstrip('/')}/.env"
+
+
+MAX_ENV_BYTES = 256 * 1024
+
+
+def read_env_file(target: str) -> tuple[dict | None, str | None]:
+    if target == "local":
+        path = local_env_path()
+        if not path.is_file():
+            return {
+                "target": "local",
+                "path": str(path),
+                "exists": False,
+                "content": "",
+            }, None
+        raw = path.read_bytes()
+        if len(raw) > MAX_ENV_BYTES:
+            return None, "env file too large"
+        return {
+            "target": "local",
+            "path": str(path),
+            "exists": True,
+            "content": raw.decode("utf-8", errors="replace"),
+        }, None
+
+    if target == "remote":
+        path = remote_env_path()
+        code, out, err = remote_capture(
+            f"if [ -f {path} ]; then cat {path}; else echo '__LINVLIB_ENV_MISSING__'; fi"
+        )
+        if code != 0:
+            return None, (err or out or f"ssh exit {code}").strip() or "ssh failed"
+        if out.strip() == "__LINVLIB_ENV_MISSING__":
+            return {
+                "target": "remote",
+                "path": path,
+                "exists": False,
+                "content": "",
+            }, None
+        if out.startswith("__LINVLIB_ENV_MISSING__\n"):
+            # unlikely; treat as missing only when exact
+            pass
+        data = out.encode("utf-8", errors="replace")
+        if len(data) > MAX_ENV_BYTES:
+            return None, "env file too large"
+        return {
+            "target": "remote",
+            "path": path,
+            "exists": True,
+            "content": out,
+        }, None
+
+    return None, "target must be local or remote"
+
+
+def write_env_file(target: str, content: str, restart: bool = False) -> str | None:
+    """Write .env. Returns error message or None on success."""
+    if len(content.encode("utf-8")) > MAX_ENV_BYTES:
+        return "env content too large"
+    # Normalize to LF for Linux; keep as-is for Windows local (LF is fine too).
+    text = content.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.endswith("\n") and text:
+        text += "\n"
+
+    if target == "local":
+        path = local_env_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            return str(exc)
+        log(f"saved local .env ({len(text)} bytes) → {path}")
+        return None
+
+    if target == "remote":
+        with JOB_LOCK:
+            if JOB_RUNNING:
+                return "another job is running"
+        remote_path = remote_env_path()
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = UPLOAD_DIR / f"env_{int(time.time())}.env"
+        try:
+            tmp.write_text(text, encoding="utf-8", newline="\n")
+            target_host = f"{CFG['ssh_user']}@{CFG['ssh_host']}"
+            log(f"upload .env ({len(text)} bytes) → {remote_path}")
+            code = run(scp_base() + [str(tmp), f"{target_host}:{remote_path}"])
+            if code != 0:
+                return "scp failed"
+            if restart:
+                log(f"restart {CFG['service_name']} after .env save")
+                if do_restart() != 0:
+                    return "saved but restart failed"
+        except OSError as exc:
+            return str(exc)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        log("remote .env saved")
+        return None
+
+    return "target must be local or remote"
+
+
 def run_job(action: str, payload: dict) -> None:
     global JOB_RUNNING
     with JOB_LOCK:
@@ -354,6 +499,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
       border: 1px solid #0f1720; padding: 0.75rem; white-space: pre-wrap;
     }
     .meta { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; }
+    .tabs { display: flex; gap: 0.35rem; margin-bottom: 0.65rem; }
+    .tabs button.is-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    #env-editor {
+      width: 100%; height: 320px; resize: vertical; font-family: Consolas, "Courier New", monospace;
+      font-size: 0.88rem; line-height: 1.45; border: 1px solid var(--line); border-radius: 10px;
+      padding: 0.75rem; background: #fbfcfd; color: var(--ink); tab-size: 2;
+    }
+    #env-editor:focus { outline: 2px solid rgba(31,122,116,0.35); border-color: var(--accent); }
+    .env-path { font-family: Consolas, monospace; font-size: 0.82rem; color: var(--muted); margin: 0 0 0.55rem; word-break: break-all; }
+    .env-status { min-height: 1.2em; font-size: 0.85rem; color: var(--muted); margin: 0.45rem 0 0; }
+    .env-status.is-ok { color: var(--accent); }
+    .env-status.is-err { color: var(--danger); }
   </style>
 </head>
 <body>
@@ -405,6 +562,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="row">
         <button class="danger" id="btn-db-upload">DB 업로드·교체</button>
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>.env 편집</h2>
+      <p class="meta" style="margin-top:0">로컬 저장소 또는 서버의 <code>.env</code>를 메모장처럼 고칩니다. 내용은 로그에 찍지 않습니다. 서버 반영 후엔 재시작이 필요합니다.</p>
+      <div class="tabs" role="tablist">
+        <button type="button" class="is-active" id="env-tab-local" data-env-target="local">로컬</button>
+        <button type="button" id="env-tab-remote" data-env-target="remote">서버</button>
+      </div>
+      <p class="env-path" id="env-path">—</p>
+      <textarea id="env-editor" spellcheck="false" wrap="off" placeholder="불러오는 중…"></textarea>
+      <div class="checks" style="margin-top:0.65rem">
+        <label><input type="checkbox" id="env-restart" /> 저장 후 서비스 재시작 (서버만)</label>
+      </div>
+      <div class="row">
+        <button type="button" id="btn-env-reload">다시 불러오기</button>
+        <button type="button" class="primary" id="btn-env-save">저장</button>
+      </div>
+      <p class="env-status" id="env-status"></p>
     </section>
 
     <section class="panel">
@@ -483,12 +659,104 @@ INDEX_HTML = r"""<!DOCTYPE html>
       await refreshLog();
     };
 
+    let envTarget = "local";
+    let envDirty = false;
+    const envEditor = document.getElementById("env-editor");
+    const envStatus = document.getElementById("env-status");
+    const envPath = document.getElementById("env-path");
+
+    function setEnvStatus(msg, kind) {
+      envStatus.textContent = msg || "";
+      envStatus.className = "env-status" + (kind ? ` is-${kind}` : "");
+    }
+
+    function setEnvTarget(target) {
+      envTarget = target;
+      document.getElementById("env-tab-local").classList.toggle("is-active", target === "local");
+      document.getElementById("env-tab-remote").classList.toggle("is-active", target === "remote");
+      document.getElementById("env-restart").disabled = target !== "remote";
+      if (target !== "remote") document.getElementById("env-restart").checked = false;
+    }
+
+    async function loadEnv(force) {
+      if (envDirty && !force) {
+        if (!confirm("저장하지 않은 변경이 있습니다. 다시 불러올까요?")) return;
+      }
+      setEnvStatus("불러오는 중…");
+      envEditor.disabled = true;
+      try {
+        const res = await fetch(`/api/env?target=${encodeURIComponent(envTarget)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "불러오기 실패");
+        envEditor.value = data.content || "";
+        envDirty = false;
+        envPath.textContent = data.path + (data.exists ? "" : " (없음 — 저장 시 생성)");
+        setEnvStatus(data.exists ? "불러왔습니다" : "파일이 없어 빈 편집기로 열었습니다", "ok");
+      } catch (ex) {
+        setEnvStatus(ex.message || String(ex), "err");
+      } finally {
+        envEditor.disabled = false;
+      }
+    }
+
+    async function saveEnv() {
+      const restart = envTarget === "remote" && document.getElementById("env-restart").checked;
+      if (envTarget === "remote" && !confirm(restart
+        ? "서버 .env를 저장한 뒤 서비스를 재시작할까요?"
+        : "서버 .env를 저장할까요? (재시작 전까지 미반영일 수 있음)")) {
+        return;
+      }
+      setEnvStatus("저장 중…");
+      try {
+        const res = await fetch("/api/env", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: envTarget,
+            content: envEditor.value,
+            restart,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "저장 실패");
+        envDirty = false;
+        envPath.textContent = data.path || envPath.textContent;
+        setEnvStatus(restart ? "저장·재시작했습니다" : "저장했습니다", "ok");
+        await refreshLog();
+      } catch (ex) {
+        setEnvStatus(ex.message || String(ex), "err");
+      }
+    }
+
+    envEditor.addEventListener("input", () => {
+      envDirty = true;
+      setEnvStatus("수정됨 — 저장하지 않음");
+    });
+    document.getElementById("env-tab-local").onclick = async () => {
+      if (envTarget === "local") return;
+      if (envDirty && !confirm("저장하지 않은 변경이 있습니다. 로컬로 이동할까요?")) return;
+      setEnvTarget("local");
+      envDirty = false;
+      await loadEnv(true);
+    };
+    document.getElementById("env-tab-remote").onclick = async () => {
+      if (envTarget === "remote") return;
+      if (envDirty && !confirm("저장하지 않은 변경이 있습니다. 서버로 이동할까요?")) return;
+      setEnvTarget("remote");
+      envDirty = false;
+      await loadEnv(true);
+    };
+    document.getElementById("btn-env-reload").onclick = () => loadEnv(false);
+    document.getElementById("btn-env-save").onclick = () => saveEnv();
+
     fetch("/api/config").then((r) => r.json()).then((c) => {
       document.getElementById("cfg-meta").textContent =
         `${c.ssh_user}@${c.ssh_host} · ${c.remote_dir} · service=${c.service_name} · repo=${c.repo_dir}`;
     });
     setInterval(refreshLog, 1000);
     refreshLog();
+    setEnvTarget("local");
+    loadEnv(true);
   </script>
 </body>
 </html>
@@ -622,7 +890,43 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/env":
+            qs = parse_qs(urlparse(self.path).query)
+            target = (qs.get("target") or ["local"])[0]
+            data, err = read_env_file(target)
+            if err:
+                self._json(400, {"error": err})
+                return
+            self._json(200, data)
+            return
         self._json(404, {"error": "not found"})
+
+    def do_PUT(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_ENV_BYTES + 4096:
+            self._json(413, {"error": "payload too large"})
+            return
+        raw = self.rfile.read(length) if length else b""
+        if path != "/api/env":
+            self._json(404, {"error": "not found"})
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._json(400, {"error": "invalid json"})
+            return
+        target = payload.get("target") or "local"
+        content = payload.get("content")
+        if not isinstance(content, str):
+            self._json(400, {"error": "content string required"})
+            return
+        err = write_env_file(target, content, restart=bool(payload.get("restart")))
+        if err:
+            self._json(400, {"error": err})
+            return
+        path_out = str(local_env_path()) if target == "local" else remote_env_path()
+        self._json(200, {"ok": True, "target": target, "path": path_out})
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path

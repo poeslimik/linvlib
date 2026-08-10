@@ -217,6 +217,9 @@ pub struct VolumeRow {
     pub isbn13: Option<String>,
     #[sqlx(default)]
     pub is_unreleased: i64,
+    /// Operator override for the short volume label (e.g. 단편집). Empty → auto.
+    #[sqlx(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -231,6 +234,7 @@ pub struct Volume {
     pub isbn13: Option<String>,
     /// True when filled from a JP edition without a Korean release.
     pub is_unreleased: bool,
+    pub label: Option<String>,
 }
 
 impl VolumeRow {
@@ -249,6 +253,10 @@ impl VolumeRow {
             aladin_item_id: self.aladin_item_id,
             isbn13: self.isbn13,
             is_unreleased: self.is_unreleased != 0,
+            label: self
+                .label
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         })
     }
 }
@@ -333,6 +341,25 @@ pub struct ResendVerificationRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgotPasswordResponse {
+    pub message: String,
+    /// Present only when `EMAIL_DEV_MODE` is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DeleteAccountRequest {
     pub password: String,
 }
@@ -365,6 +392,8 @@ pub struct VolumeWithRead {
     pub published_at: Option<NaiveDate>,
     pub is_read: bool,
     pub is_unreleased: bool,
+    /// Operator-set short label; null → client auto-formats from title.
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,6 +415,42 @@ pub struct SeriesDetailResponse {
     pub total_volumes: i64,
     pub read_volumes: i64,
     pub progress_percent: i32,
+    /// Search nicknames / abbreviations (auto + manual).
+    #[serde(default)]
+    pub search_aliases: Vec<SeriesSearchAlias>,
+    /// Other works grouped for combined search (e.g. main + spin-off).
+    #[serde(default)]
+    pub search_bundle_peers: Vec<SearchBundlePeer>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SeriesSearchAlias {
+    pub id: Uuid,
+    pub alias: String,
+    /// auto | user | admin
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchBundlePeer {
+    pub id: Uuid,
+    pub title: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddSearchAliasRequest {
+    pub alias: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchSearchAliasRequest {
+    pub alias: String,
+    pub series_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchSearchBundleRequest {
+    pub series_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -466,6 +531,8 @@ pub struct ManualVolumeInput {
     pub title: Option<String>,
     pub published_at: Option<String>,
     pub cover_url: Option<String>,
+    /// Short display label override (단편집, SS집, …). Empty clears to auto.
+    pub label: Option<String>,
     /// JP-only fill without Korean release (미정발)
     #[serde(default)]
     pub is_unreleased: bool,
@@ -538,9 +605,12 @@ pub struct BulkRefreshResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct CatalogRequestCreate {
-    /// add | edit | delete | other
+    /// add | edit | other | search_improve
     pub request_type: String,
     pub series_id: Option<Uuid>,
+    /// For search_improve: target series that the query should match (multi).
+    #[serde(default)]
+    pub series_ids: Option<Vec<Uuid>>,
     pub title: Option<String>,
     pub author: Option<String>,
     pub publisher: Option<String>,
@@ -568,10 +638,18 @@ pub struct CatalogRequestItem {
     pub publisher: Option<String>,
     pub aladin_series_id: Option<String>,
     pub note: Option<String>,
+    pub related_series_ids: Vec<Uuid>,
+    pub related_series: Vec<CatalogRequestRelatedSeries>,
     pub status: String,
     pub admin_note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogRequestRelatedSeries {
+    pub id: Uuid,
+    pub title: String,
 }
 
 #[derive(Debug, Serialize)]

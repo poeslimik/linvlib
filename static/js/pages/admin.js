@@ -3,7 +3,17 @@ import { getUser } from "../auth.js";
 import { navigate } from "../router.js";
 import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout } from "../ui.js";
 
-const TYPE_LABEL = { add: "추가", edit: "수정", delete: "삭제", other: "기타" };
+const TYPE_LABEL = {
+  add: "추가",
+  edit: "수정",
+  delete: "삭제",
+  other: "기타",
+  search_improve: "검색 개선",
+};
+const STATUS_LABEL = {
+  approved: "승인",
+  rejected: "거절",
+};
 const TABS = [
   { id: "status", label: "상태" },
   { id: "requests", label: "요청" },
@@ -40,6 +50,7 @@ export async function renderAdmin(root) {
   let tab = tabFromHash();
   let status = null;
   let requests = [];
+  let requestHistory = [];
   let users = [];
   let manuals = [];
   let backups = [];
@@ -56,10 +67,17 @@ export async function renderAdmin(root) {
     return true;
   }
 
+  async function loadRequests() {
+    [requests, requestHistory] = await Promise.all([
+      api.listAdminCatalogRequests("pending"),
+      api.listAdminCatalogRequests("reviewed"),
+    ]);
+  }
+
   async function loadTabData() {
     try {
       if (tab === "requests") {
-        requests = await api.listAdminCatalogRequests("pending");
+        await loadRequests();
       } else if (tab === "users") {
         users = await api.adminUsers();
       } else if (tab === "manuals") {
@@ -128,8 +146,84 @@ export async function renderAdmin(root) {
                 .join(" · ")}</p>`
             : ""
         }
-        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 23:30에 남은 소프트 쿼터로 신간 갱신(자정에 중단), 자정에 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 남은 소프트 쿼터로 신간 갱신(자정 중단), 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
       </section>`;
+  }
+
+  function renderRequestBody(r) {
+    return `
+      <div>
+        <strong>${TYPE_LABEL[r.request_type] || r.request_type}</strong>
+        · ${escapeHtml(r.title || r.series_title || (r.request_type === "other" ? "기타 요청" : "(제목 없음)"))}
+        <span class="muted">${escapeHtml(r.user_email || "")}</span>
+      </div>
+      <p class="muted">${formatDate(r.created_at)}${r.aladin_series_id ? ` · ${escapeHtml(r.aladin_series_id)}` : ""}</p>
+      ${
+        r.request_type === "search_improve" && (r.related_series || []).length
+          ? `<p class="muted">연결: ${(r.related_series || [])
+              .map((s) => escapeHtml(s.title))
+              .join(" · ")}</p>`
+          : ""
+      }
+      ${r.note ? `<p>${escapeHtml(r.note)}</p>` : ""}`;
+  }
+
+  function renderPendingActions(r) {
+    const showAladinSearch = r.request_type !== "edit";
+    return `
+      <div class="request-item__actions">
+        ${
+          r.request_type === "add" && r.aladin_series_id
+            ? `<button type="button" class="btn btn--primary btn--sm" data-import="${escapeAttr(r.aladin_series_id)}" data-title="${escapeAttr(r.title || "")}" data-rid="${r.id}">가져오기 후 승인</button>`
+            : ""
+        }
+        ${
+          r.request_type === "add" && !r.aladin_series_id
+            ? `<a class="btn btn--primary btn--sm" href="/import?tab=manual&title=${encodeURIComponent(r.title || "")}&author=${encodeURIComponent(r.author || "")}&publisher=${encodeURIComponent(r.publisher || "")}" data-link>직접 등록</a>`
+            : ""
+        }
+        <button type="button" class="btn btn--ghost btn--sm" data-approve="${r.id}">${
+          r.request_type === "search_improve" ? "별칭 반영·승인" : "승인"
+        }</button>
+        <button type="button" class="btn btn--danger btn--sm" data-reject="${r.id}">거절</button>
+        ${r.series_id ? `<a class="btn btn--ghost btn--sm" href="/series/${r.series_id}" data-link>작품</a>` : ""}
+        ${(r.related_series || [])
+          .slice(0, 3)
+          .map(
+            (s) =>
+              `<a class="btn btn--ghost btn--sm" href="/series/${s.id}" data-link>${escapeHtml(s.title)}</a>`
+          )
+          .join("")}
+        ${
+          showAladinSearch
+            ? `<a class="btn btn--ghost btn--sm" href="/import?q=${encodeURIComponent(r.title || "")}" data-link>알라딘 검색</a>`
+            : ""
+        }
+      </div>`;
+  }
+
+  function renderHistoryItem(r) {
+    const statusLabel = STATUS_LABEL[r.status] || r.status;
+    const statusClass = r.status === "rejected" ? "badge-warn" : "";
+    return `
+      <li class="request-item request-item--history" data-id="${r.id}">
+        ${renderRequestBody(r)}
+        <p class="muted">
+          <span class="${statusClass}">${escapeHtml(statusLabel)}</span>
+          · 처리 ${formatDate(r.updated_at || r.created_at)}
+          ${r.admin_note ? ` · ${escapeHtml(r.admin_note)}` : ""}
+        </p>
+        <div class="request-item__actions">
+          ${r.series_id ? `<a class="btn btn--ghost btn--sm" href="/series/${r.series_id}" data-link>작품</a>` : ""}
+          ${(r.related_series || [])
+            .slice(0, 3)
+            .map(
+              (s) =>
+                `<a class="btn btn--ghost btn--sm" href="/series/${s.id}" data-link>${escapeHtml(s.title)}</a>`
+            )
+            .join("")}
+        </div>
+      </li>`;
   }
 
   function renderRequests() {
@@ -142,28 +236,21 @@ export async function renderAdmin(root) {
                 .map(
                   (r) => `
               <li class="request-item" data-id="${r.id}">
-                <div>
-                  <strong>${TYPE_LABEL[r.request_type] || r.request_type}</strong>
-                  · ${escapeHtml(r.title || r.series_title || (r.request_type === "other" ? "기타 요청" : "(제목 없음)"))}
-                  <span class="muted">${escapeHtml(r.user_email || "")}</span>
-                </div>
-                <p class="muted">${formatDate(r.created_at)}${r.aladin_series_id ? ` · ${escapeHtml(r.aladin_series_id)}` : ""}</p>
-                ${r.note ? `<p>${escapeHtml(r.note)}</p>` : ""}
-                <div class="request-item__actions">
-                  ${
-                    r.request_type === "add" && r.aladin_series_id
-                      ? `<button type="button" class="btn btn--primary btn--sm" data-import="${escapeAttr(r.aladin_series_id)}" data-title="${escapeAttr(r.title || "")}" data-rid="${r.id}">가져오기 후 승인</button>`
-                      : ""
-                  }
-                  <button type="button" class="btn btn--ghost btn--sm" data-approve="${r.id}">승인</button>
-                  <button type="button" class="btn btn--danger btn--sm" data-reject="${r.id}">거절</button>
-                  ${r.series_id ? `<a class="btn btn--ghost btn--sm" href="/series/${r.series_id}" data-link>작품</a>` : ""}
-                  <a class="btn btn--ghost btn--sm" href="/import?q=${encodeURIComponent(r.title || "")}" data-link>검색</a>
-                </div>
+                ${renderRequestBody(r)}
+                ${renderPendingActions(r)}
               </li>`
                 )
                 .join("")}</ul>`
             : `<p class="muted">대기 요청이 없습니다.</p>`
+        }
+      </section>
+      <section class="panel admin-request-history" aria-labelledby="admin-request-history-title">
+        <h2 id="admin-request-history-title">요청 기록${requestHistory.length ? ` (${requestHistory.length})` : ""}</h2>
+        <p class="muted">승인·거절한 요청입니다. 최근 100건까지 표시합니다.</p>
+        ${
+          requestHistory.length
+            ? `<ul class="request-list">${requestHistory.map(renderHistoryItem).join("")}</ul>`
+            : `<p class="muted">처리한 요청이 없습니다.</p>`
         }
       </section>`;
   }
@@ -292,7 +379,9 @@ export async function renderAdmin(root) {
           <div class="page__head--row">
             <h1>관리</h1>
             <div class="admin-head-actions">
+              <a class="btn btn--primary btn--sm" href="/import" data-link>알라딘 추가</a>
               <a class="btn btn--ghost btn--sm" href="/import?tab=manual" data-link>직접 등록</a>
+              <a class="btn btn--ghost btn--sm" href="/import?tab=aliases" data-link>검색</a>
             </div>
           </div>
           <p class="page__lead">상태 · 요청 · 카탈로그 · 사용자 · 백업을 탭으로 나눕니다.</p>
@@ -434,7 +523,7 @@ export async function renderAdmin(root) {
           await api.reviewCatalogRequest(btn.dataset.approve, { status: "approved" });
           toast("승인했습니다", "ok");
           status = await api.adminStatus();
-          requests = await api.listAdminCatalogRequests("pending");
+          await loadRequests();
           paint();
         } catch (ex) {
           toast(ex.message, "error");
@@ -444,15 +533,16 @@ export async function renderAdmin(root) {
 
     root.querySelectorAll("[data-reject]").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const note = prompt("거절 사유 (선택)") || null;
+        const note = prompt("거절 사유 (선택)");
+        if (note === null) return;
         try {
           await api.reviewCatalogRequest(btn.dataset.reject, {
             status: "rejected",
-            admin_note: note,
+            admin_note: note.trim() || null,
           });
           toast("거절했습니다", "ok");
           status = await api.adminStatus();
-          requests = await api.listAdminCatalogRequests("pending");
+          await loadRequests();
           paint();
         } catch (ex) {
           toast(ex.message, "error");
@@ -474,7 +564,7 @@ export async function renderAdmin(root) {
           });
           toast(`가져오기 완료 (${res.volume_count}권)`, "ok");
           status = await api.adminStatus();
-          requests = await api.listAdminCatalogRequests("pending");
+          await loadRequests();
           paint();
         } catch (ex) {
           toast(ex.message, "error");

@@ -3,7 +3,13 @@ import { getUser, clearAuth } from "../auth.js";
 import { navigate } from "../router.js";
 import { shell, escapeHtml, formatDate, toast, bindLogout } from "../ui.js";
 
-const TYPE_LABEL = { add: "추가", edit: "수정", delete: "삭제", other: "기타" };
+const TYPE_LABEL = {
+  add: "추가",
+  edit: "수정",
+  delete: "삭제",
+  other: "기타",
+  search_improve: "검색 개선",
+};
 const STATUS_LABEL = {
   pending: "대기",
   approved: "승인",
@@ -60,6 +66,13 @@ export async function renderMypage(root) {
                     · ${escapeHtml(r.title || r.series_title || (r.request_type === "other" ? "기타 요청" : "(제목 없음)"))}
                     <span class="request-status request-status--${escapeHtml(r.status)}">${STATUS_LABEL[r.status] || r.status}</span>
                   </div>
+                  ${
+                    r.request_type === "search_improve" && (r.related_series || []).length
+                      ? `<p class="muted">연결: ${(r.related_series || [])
+                          .map((s) => escapeHtml(s.title))
+                          .join(" · ")}</p>`
+                      : ""
+                  }
                   <p class="muted">${formatDate(r.created_at)}${r.note ? ` · ${escapeHtml(r.note)}` : ""}</p>
                   ${r.admin_note ? `<p class="muted">운영자: ${escapeHtml(r.admin_note)}</p>` : ""}
                 </li>`

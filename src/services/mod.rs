@@ -8,6 +8,8 @@ pub mod quota;
 pub mod rate_limit;
 pub mod scheduler;
 pub mod search;
+pub mod search_keys;
 pub mod series;
+pub mod status_report;
 pub mod tierlist;
 pub mod title_rules;

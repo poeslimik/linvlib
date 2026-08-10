@@ -110,6 +110,11 @@ pub async fn update_series(
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let published = manual::parse_date_pub(vol.published_at.as_deref());
+        let label = vol
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         if is_new {
             repositories::insert_manual_volume(
                 &state.pool,
@@ -120,6 +125,7 @@ pub async fn update_series(
                 cover,
                 published,
                 vol.is_unreleased,
+                label,
             )
             .await?;
         } else {
@@ -132,6 +138,7 @@ pub async fn update_series(
                 cover,
                 published,
                 vol.is_unreleased,
+                label,
             )
             .await?;
         }

@@ -69,20 +69,46 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+  forgotPassword: (email) =>
+    request("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token, password) =>
+    request("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+    }),
   me: () => request("/auth/me"),
   deleteAccount: (password) =>
     request("/auth/me", {
       method: "DELETE",
       body: JSON.stringify({ password }),
     }),
-  listSeries: ({ sort = "latest", page = 1, limit = 20, q = "", status = "all" } = {}) => {
+  listSeries: ({
+    sort = "latest",
+    order = "desc",
+    page = 1,
+    limit = 20,
+    q = "",
+    status = "all",
+    read_f = "",
+    rated_f = "",
+    ps_in = "",
+    ps_ex = "",
+  } = {}) => {
     const sp = new URLSearchParams({
       sort,
+      order,
       page: String(page),
       limit: String(limit),
       status,
     });
     if (q) sp.set("q", q);
+    if (read_f) sp.set("read_f", read_f);
+    if (rated_f) sp.set("rated_f", rated_f);
+    if (ps_in) sp.set("ps_in", ps_in);
+    if (ps_ex) sp.set("ps_ex", ps_ex);
     return request(`/series?${sp}`);
   },
   getSeries: (id, order = "desc") =>
@@ -131,6 +157,23 @@ export const api = {
     request(`/series/${id}/publish-status`, {
       method: "PUT",
       body: JSON.stringify({ publish_status }),
+    }),
+  addSeriesAlias: (id, alias) =>
+    request(`/series/${id}/aliases`, {
+      method: "POST",
+      body: JSON.stringify({ alias }),
+    }),
+  deleteSeriesAlias: (id, aliasId) =>
+    request(`/series/${id}/aliases/${aliasId}`, { method: "DELETE" }),
+  batchSearchAliases: (alias, series_ids) =>
+    request("/admin/search-aliases", {
+      method: "POST",
+      body: JSON.stringify({ alias, series_ids }),
+    }),
+  createSearchBundle: (series_ids) =>
+    request("/admin/search-bundles", {
+      method: "POST",
+      body: JSON.stringify({ series_ids }),
     }),
   createCatalogRequest: (payload) =>
     request("/catalog-requests", {

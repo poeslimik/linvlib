@@ -23,6 +23,8 @@ pub struct Config {
     pub backup_dir: String,
     /// How many days of backup files to keep.
     pub backup_retain_days: i64,
+    /// Discord Incoming Webhook URL for daily status reports (optional).
+    pub discord_status_webhook_url: Option<String>,
     /// When true (or SMTP unset), register/resend may return verification_token.
     pub email_dev_mode: bool,
     pub smtp_host: Option<String>,
@@ -77,6 +79,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(14),
+            discord_status_webhook_url: env::var("DISCORD_STATUS_WEBHOOK_URL")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             email_dev_mode,
             smtp_host,
             smtp_port: env::var("SMTP_PORT")

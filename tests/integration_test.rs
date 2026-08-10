@@ -23,6 +23,7 @@ fn test_config(database_url: String) -> Config {
         aladin_soft_quota: 4800,
         backup_dir: "backups-test".to_string(),
         backup_retain_days: 14,
+        discord_status_webhook_url: None,
         email_dev_mode: true,
         smtp_host: None,
         smtp_port: 587,
@@ -180,6 +181,109 @@ async fn auth_register_login_and_me_flow() {
         .unwrap();
 
     assert_eq!(login.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn forgot_and_reset_password_flow() {
+    let app = setup_app().await;
+    let _token = register_and_verify(&app, "reset-me@example.com", "password123").await;
+
+    let forgot = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/forgot-password")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "email": "reset-me@example.com" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forgot.status(), StatusCode::OK);
+    let forgot_json = read_json(forgot).await;
+    let reset_token = forgot_json["reset_token"]
+        .as_str()
+        .expect("EMAIL_DEV_MODE should return reset_token");
+
+    let unknown = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/forgot-password")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "email": "nobody@example.com" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::OK);
+    let unknown_json = read_json(unknown).await;
+    assert!(unknown_json["reset_token"].is_null());
+
+    let reset = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/reset-password")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "token": reset_token,
+                        "password": "newpassword99"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let old_login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "reset-me@example.com",
+                        "password": "password123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(old_login.status(), StatusCode::UNAUTHORIZED);
+
+    let new_login = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "email": "reset-me@example.com",
+                        "password": "newpassword99"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(new_login.status(), StatusCode::OK);
 }
 
 #[tokio::test]

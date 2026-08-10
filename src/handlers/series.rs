@@ -18,19 +18,37 @@ use crate::{
 pub struct SeriesListQuery {
     #[serde(default = "default_sort")]
     pub sort: String,
+    /// asc | desc (default desc)
+    #[serde(default = "default_list_order")]
+    pub order: String,
     #[serde(default = "default_page")]
     pub page: i64,
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]
     pub q: String,
-    /// all | read | unread | unrated
+    /// all | read | unread | unrated (legacy; prefer read_f / rated_f)
     #[serde(default = "default_status")]
     pub status: String,
+    /// Tri-state read filter: in | ex | (empty = off)
+    #[serde(default)]
+    pub read_f: String,
+    /// Tri-state rated filter: in | ex | (empty = off)
+    #[serde(default)]
+    pub rated_f: String,
+    /// Comma-separated publish_status values to include
+    #[serde(default)]
+    pub ps_in: String,
+    /// Comma-separated publish_status values to exclude
+    #[serde(default)]
+    pub ps_ex: String,
 }
 
 fn default_sort() -> String {
     "latest".to_string()
+}
+fn default_list_order() -> String {
+    "desc".to_string()
 }
 fn default_page() -> i64 {
     1
@@ -61,10 +79,15 @@ pub async fn list_series(
         &state,
         user.id,
         &query.sort,
+        &query.order,
         query.page,
         query.limit,
         &query.q,
         &query.status,
+        &query.read_f,
+        &query.rated_f,
+        &query.ps_in,
+        &query.ps_ex,
     )
     .await?;
     Ok(Json(response))
@@ -180,5 +203,31 @@ pub async fn set_series_publish_status(
         "id": series.id,
         "publish_status": series.publish_status,
     })))
+}
+
+pub async fn add_search_alias(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::models::AddSearchAliasRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::services::search_keys::add_admin_alias(&state, id, &body.alias).await?;
+    let aliases = repositories::list_search_aliases(&state.pool, id)
+        .await?
+        .into_iter()
+        .map(|(aid, alias, source)| {
+            serde_json::json!({ "id": aid, "alias": alias, "source": source })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({ "ok": true, "search_aliases": aliases })))
+}
+
+pub async fn delete_search_alias(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path((id, alias_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::services::search_keys::remove_alias(&state, id, alias_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 

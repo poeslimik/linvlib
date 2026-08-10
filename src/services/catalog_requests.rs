@@ -2,12 +2,34 @@ use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
-    models::{CatalogRequestCreate, CatalogRequestItem, CatalogRequestReview},
+    models::{
+        CatalogRequestCreate, CatalogRequestItem, CatalogRequestRelatedSeries, CatalogRequestReview,
+    },
     repositories::{self, CatalogRequestRow},
+    services::search_keys,
     state::AppState,
 };
 
-fn row_to_item(row: CatalogRequestRow) -> AppResult<CatalogRequestItem> {
+fn parse_related_ids(raw: Option<&str>) -> Vec<Uuid> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    if let Ok(ids) = serde_json::from_str::<Vec<Uuid>>(raw) {
+        return ids;
+    }
+    raw.split(',')
+        .filter_map(|part| Uuid::parse_str(part.trim()).ok())
+        .collect()
+}
+
+async fn row_to_item(state: &AppState, row: CatalogRequestRow) -> AppResult<CatalogRequestItem> {
+    let related_series_ids = parse_related_ids(row.related_series_ids.as_deref());
+    let related_series = repositories::list_series_titles_by_ids(&state.pool, &related_series_ids)
+        .await?
+        .into_iter()
+        .map(|(id, title)| CatalogRequestRelatedSeries { id, title })
+        .collect();
+
     Ok(CatalogRequestItem {
         id: crate::models::parse_uuid(&row.id)?,
         user_id: crate::models::parse_uuid(&row.user_id)?,
@@ -24,6 +46,8 @@ fn row_to_item(row: CatalogRequestRow) -> AppResult<CatalogRequestItem> {
         publisher: row.publisher,
         aladin_series_id: row.aladin_series_id,
         note: row.note,
+        related_series_ids,
+        related_series,
         status: row.status,
         admin_note: row.admin_note,
         created_at: row.created_at,
@@ -37,15 +61,18 @@ pub async fn create_request(
     body: CatalogRequestCreate,
 ) -> AppResult<CatalogRequestItem> {
     let request_type = body.request_type.trim().to_lowercase();
-    if !matches!(request_type.as_str(), "add" | "edit" | "delete" | "other") {
+    if !matches!(
+        request_type.as_str(),
+        "add" | "edit" | "other" | "search_improve"
+    ) {
         return Err(AppError::BadRequest(
-            "request_type must be add, edit, delete, or other".into(),
+            "request_type must be add, edit, other, or search_improve".into(),
         ));
     }
 
-    if matches!(request_type.as_str(), "edit" | "delete") && body.series_id.is_none() {
+    if request_type == "edit" && body.series_id.is_none() {
         return Err(AppError::BadRequest(
-            "series_id is required for edit/delete requests".into(),
+            "series_id is required for edit requests".into(),
         ));
     }
 
@@ -68,11 +95,45 @@ pub async fn create_request(
         }
     }
 
+    let mut related_ids: Vec<Uuid> = body.series_ids.unwrap_or_default();
+    related_ids.sort();
+    related_ids.dedup();
+
+    if request_type == "search_improve" {
+        let query = body.title.as_deref().map(str::trim).unwrap_or("");
+        if query.is_empty() {
+            return Err(AppError::BadRequest(
+                "title (search query) is required for search_improve".into(),
+            ));
+        }
+        if related_ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "series_ids is required for search_improve".into(),
+            ));
+        }
+        if related_ids.len() > 20 {
+            return Err(AppError::BadRequest(
+                "series_ids too many (max 20)".into(),
+            ));
+        }
+        for sid in &related_ids {
+            repositories::find_series_by_id(&state.pool, *sid)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("series {sid} not found")))?;
+        }
+    }
+
     if let Some(series_id) = body.series_id {
         repositories::find_series_by_id(&state.pool, series_id)
             .await?
             .ok_or_else(|| AppError::NotFound("series not found".into()))?;
     }
+
+    let related_json = if related_ids.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&related_ids).unwrap_or_else(|_| "[]".into()))
+    };
 
     let id = Uuid::new_v4();
     repositories::insert_catalog_request(
@@ -92,32 +153,35 @@ pub async fn create_request(
             .map(str::trim)
             .filter(|s| !s.is_empty()),
         body.note.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        related_json.as_deref(),
     )
     .await?;
 
-    repositories::find_catalog_request(&state.pool, id)
+    let row = repositories::find_catalog_request(&state.pool, id)
         .await?
-        .ok_or_else(|| AppError::Internal("failed to load request".into()))
-        .and_then(row_to_item)
+        .ok_or_else(|| AppError::Internal("failed to load request".into()))?;
+    row_to_item(state, row).await
 }
 
 pub async fn list_mine(state: &AppState, user_id: Uuid) -> AppResult<Vec<CatalogRequestItem>> {
-    repositories::list_catalog_requests_for_user(&state.pool, user_id)
-        .await?
-        .into_iter()
-        .map(row_to_item)
-        .collect()
+    let rows = repositories::list_catalog_requests_for_user(&state.pool, user_id).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(row_to_item(state, row).await?);
+    }
+    Ok(out)
 }
 
 pub async fn list_admin(
     state: &AppState,
     status: Option<&str>,
 ) -> AppResult<Vec<CatalogRequestItem>> {
-    repositories::list_catalog_requests_admin(&state.pool, status)
-        .await?
-        .into_iter()
-        .map(row_to_item)
-        .collect()
+    let rows = repositories::list_catalog_requests_admin(&state.pool, status).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(row_to_item(state, row).await?);
+    }
+    Ok(out)
 }
 
 pub async fn review(
@@ -139,16 +203,41 @@ pub async fn review(
         return Err(AppError::BadRequest("request is already reviewed".into()));
     }
 
+    if status == "approved" && existing.request_type == "search_improve" {
+        let query = existing
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::BadRequest("search_improve missing query".into()))?;
+        let ids = parse_related_ids(existing.related_series_ids.as_deref());
+        if ids.is_empty() {
+            return Err(AppError::BadRequest(
+                "search_improve missing series_ids".into(),
+            ));
+        }
+        for sid in ids {
+            search_keys::add_user_alias(state, sid, query).await?;
+        }
+    }
+
+    let admin_note = body
+        .admin_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     repositories::update_catalog_request_status(
         &state.pool,
         id,
         &status,
-        body.admin_note.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        admin_note.as_deref(),
     )
     .await?;
 
-    repositories::find_catalog_request(&state.pool, id)
+    let row = repositories::find_catalog_request(&state.pool, id)
         .await?
-        .ok_or_else(|| AppError::Internal("failed to load request".into()))
-        .and_then(row_to_item)
+        .ok_or_else(|| AppError::Internal("failed to load request".into()))?;
+    row_to_item(state, row).await
 }

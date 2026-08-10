@@ -1,0 +1,1 @@
+ALTER TABLE volumes ADD COLUMN label TEXT;

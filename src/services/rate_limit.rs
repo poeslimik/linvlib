@@ -24,6 +24,12 @@ const RESEND_WINDOW: Duration = Duration::from_secs(60 * 60);
 const VERIFY_LIMIT: usize = 30;
 const VERIFY_WINDOW: Duration = Duration::from_secs(15 * 60);
 
+const FORGOT_LIMIT: usize = 5;
+const FORGOT_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+const RESET_LIMIT: usize = 20;
+const RESET_WINDOW: Duration = Duration::from_secs(15 * 60);
+
 #[derive(Debug, Default)]
 pub struct AuthRateLimiter {
     inner: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -54,6 +60,23 @@ impl AuthRateLimiter {
 
     pub fn check_verify(&self, ip: &str) -> AppResult<()> {
         self.check(&format!("verify:ip:{ip}"), VERIFY_LIMIT, VERIFY_WINDOW)
+    }
+
+    pub fn check_forgot(&self, ip: &str, email: &str) -> AppResult<()> {
+        self.check(&format!("forgot:ip:{ip}"), FORGOT_LIMIT, FORGOT_WINDOW)?;
+        let email = email.trim().to_lowercase();
+        if !email.is_empty() {
+            self.check(
+                &format!("forgot:email:{email}"),
+                FORGOT_LIMIT,
+                FORGOT_WINDOW,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn check_reset(&self, ip: &str) -> AppResult<()> {
+        self.check(&format!("reset:ip:{ip}"), RESET_LIMIT, RESET_WINDOW)
     }
 
     fn check(&self, key: &str, limit: usize, window: Duration) -> AppResult<()> {

@@ -4,7 +4,7 @@ Light novel Library — 라이트노벨 읽기 기록·평가·티어리스트
 
 ## 주요 기능
 
-- 회원가입, 이메일 인증·재발송, 로그인(JWT), 회원 탈퇴
+- 회원가입, 이메일 인증·재발송, 로그인(JWT), 비밀번호 찾기, 회원 탈퇴
 - 이용약관·개인정보처리방침 동의 (`/terms`, `/privacy`)
 - 작품 목록·검색·필터, 권 단위 읽음, 평가(S~F), 연재 현황 배지
 - 알라딘 검색·시리즈 가져오기(관리자) / 카탈로그 추가·수정·삭제 요청(일반)
@@ -66,6 +66,7 @@ cargo run
 | `ALADIN_SOFT_QUOTA` | 자동 갱신 중단 임계 | `4800` |
 | `BACKUP_DIR` | DB 백업 디렉터리 | `backups` |
 | `BACKUP_RETAIN_DAYS` | 백업 보관 일수 | `14` |
+| `DISCORD_STATUS_WEBHOOK_URL` | 매일 08:00 KST 상태 보고용 Discord 웹훅 | (선택) |
 | `ADMIN_EMAIL` | 부트스트랩 관리자 이메일 | (비어 있으면 없음) |
 | `APP_BASE_URL` | 인증 메일 링크용 공개 URL | `http://localhost:3000` |
 | `TITLE_RULES_PATH` | 제목 정규화 규칙 파일 | `config/title_rules.toml` |
@@ -87,6 +88,8 @@ cargo run
 | POST | `/api/v1/auth/resend-verification` | 인증 메일 재발송 |
 | POST | `/api/v1/auth/verify` | 이메일 인증 |
 | POST | `/api/v1/auth/login` | 로그인 |
+| POST | `/api/v1/auth/forgot-password` | 비밀번호 재설정 메일 |
+| POST | `/api/v1/auth/reset-password` | 비밀번호 재설정 |
 | GET | `/api/v1/auth/me` | 내 정보 |
 | DELETE | `/api/v1/auth/me` | 회원 탈퇴 |
 | GET | `/api/v1/series` | 작품 목록 |

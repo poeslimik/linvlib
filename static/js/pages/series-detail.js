@@ -65,6 +65,8 @@ function formatVolumeLabel(volumeNumber, title = "", sssCount = 1, exCount = 1, 
         cleaned.match(/(?:\s|\.)(\d+(?:\.\d+)?)\s*(?:권)?\s*[-–—:,，(]/);
       return m ? `사족편 ${m[1]}권` : "사족편";
     }
+    if (/단편집/.test(cleaned)) return "단편집";
+    if (/SS\s*집|ＳＳ\s*집/i.test(cleaned)) return "SS집";
     const chapter = cleaned.match(/[:：]\s*(.+의\s*장)\s*$/);
     if (chapter) return chapter[1].trim();
     // 춘하추동 대행자 봄의 춤 : 상 → 봄의 춤 상
@@ -115,6 +117,12 @@ function formatVolumeLabel(volumeNumber, title = "", sssCount = 1, exCount = 1, 
   return `${volumeNumber}권`;
 }
 
+function displayVolumeLabel(volume, sssCount = 1, exCount = 1, sajokCount = 1) {
+  const custom = (volume?.label || "").trim();
+  if (custom) return custom;
+  return formatVolumeLabel(volume?.volume_number, volume?.title, sssCount, exCount, sajokCount);
+}
+
 function volumeDateValue(publishedAt) {
   if (!publishedAt) return "";
   return String(publishedAt).slice(0, 10);
@@ -129,6 +137,7 @@ function editVolumeRowHtml(vol = {}, idx = 0) {
         <input type="checkbox" class="manual-vol-check" ${vol.id ? "" : "disabled"} />
       </label>
       <input type="number" min="1" class="manual-vol-num" value="${escapeAttr(vol.volume_number ?? idx + 1)}" title="권번호" />
+      <input type="text" class="manual-vol-label" value="${escapeAttr(vol.label || "")}" placeholder="표시명" title="목록에 보이는 짧은 이름 (비우면 자동)" />
       <input type="text" class="manual-vol-title" value="${escapeAttr(vol.title || "")}" placeholder="권 제목" />
       <input type="date" class="manual-vol-date" value="${escapeAttr(volumeDateValue(vol.published_at))}" title="출간일" />
       <input type="url" class="manual-vol-cover" value="${escapeAttr(vol.cover_url || "")}" placeholder="표지 URL" title="표지 URL" />
@@ -204,6 +213,8 @@ export async function renderSeriesDetail(root, { id }) {
   };
   window.addEventListener("beforeunload", unloadHandler);
 
+  let lastReadClickIndex = null;
+
   function markDirty(v = true) {
     dirty = v;
     const saveBtn = root.querySelector("#save-reads");
@@ -243,8 +254,7 @@ export async function renderSeriesDetail(root, { id }) {
          }
          <button type="button" class="btn btn--danger btn--sm" id="delete-series">삭제</button>
          ${completeToggle}`
-      : `<button type="button" class="btn btn--ghost btn--sm" id="request-edit">수정 요청</button>
-         <button type="button" class="btn btn--danger btn--sm" id="request-delete">삭제 요청</button>`;
+      : `<button type="button" class="btn btn--ghost btn--sm" id="request-edit">수정 요청</button>`;
 
     const editPanel =
       isAdmin && editing
@@ -274,6 +284,41 @@ export async function renderSeriesDetail(root, { id }) {
               <span>대표 표지 URL</span>
               <input name="cover_url" id="edit-cover" type="url" value="${escapeAttr(series.cover_url || "")}" placeholder="https://… (비우면 최신 권 표지)" />
             </label>
+            <div class="alias-edit">
+              <h3>검색</h3>
+              <p class="muted">줄임말·별칭과 함께 검색됩니다. 예: 전생슬, SAO.</p>
+              ${
+                (series.search_bundle_peers || []).length
+                  ? `<p class="muted">함께 검색됨: ${(series.search_bundle_peers || [])
+                      .map(
+                        (p) =>
+                          `<a href="/series/${p.id}" data-link>${escapeHtml(p.title)}</a>`
+                      )
+                      .join(" · ")}</p>`
+                  : ""
+              }
+              <ul id="alias-list" class="alias-list">
+                ${(series.search_aliases || [])
+                  .map((a) => {
+                    const src =
+                      a.source === "admin" ? "직접" : a.source === "user" ? "요청" : "자동";
+                    const canRemove = a.source !== "auto";
+                    return `<li class="alias-list__item" data-alias-id="${escapeAttr(a.id)}">
+                      <span><strong>${escapeHtml(a.alias)}</strong> <span class="muted">(${src})</span></span>
+                      ${
+                        canRemove
+                          ? `<button type="button" class="btn btn--ghost btn--sm" data-alias-remove="${escapeAttr(a.id)}">삭제</button>`
+                          : ""
+                      }
+                    </li>`;
+                  })
+                  .join("") || `<li class="muted">등록된 별칭이 없습니다.</li>`}
+              </ul>
+              <div class="alias-add-row">
+                <input type="text" id="alias-input" maxlength="80" placeholder="줄임말 또는 별칭" />
+                <button type="button" class="btn btn--ghost btn--sm" id="alias-add">추가</button>
+              </div>
+            </div>
             <div class="manual-vols-head">
               <h3>권 목록</h3>
               <div class="manual-vols-actions">
@@ -345,13 +390,8 @@ export async function renderSeriesDetail(root, { id }) {
               <a href="/series/${id}?order=asc" data-link class="sort-tabs__item ${orderParam === "asc" ? "is-active" : ""}">1권부터</a>
             </div>
             <div class="volume-toolbar__actions">
-              <label class="mark-upto">
-                <span class="sr-only">권까지 읽음</span>
-                <input type="number" id="mark-upto-n" min="1" max="${series.total_volumes || 999}" placeholder="N" title="권번호" />
-                <button type="button" class="btn btn--ghost btn--sm" id="mark-upto">권까지 읽음</button>
-              </label>
+              <span class="volume-read-hint" title="PC에서 Shift+클릭으로 구간 선택">Shift+클릭 구간</span>
               <button type="button" class="btn btn--ghost btn--sm" id="select-all">전체 선택</button>
-              <button type="button" class="btn btn--ghost btn--sm" id="clear-all">전체 해제</button>
               <button type="button" class="btn btn--primary btn--sm" id="save-reads" ${dirty ? "" : "disabled"}>저장</button>
             </div>
           </div>
@@ -367,7 +407,7 @@ export async function renderSeriesDetail(root, { id }) {
                 ${cover(v.cover_url, formatVolumeTitle(v.title), "cover cover--sm")}
                 <div class="volume-item__meta">
                   <h3>${escapeHtml(formatVolumeTitle(v.title))}</h3>
-                  <p>${formatVolumeLabel(v.volume_number, v.title, sssCount, exCount, sajokCount)} · ${formatDate(v.published_at)}${v.is_unreleased ? ` <span class="badge-unreleased" title="현지 발매 · 국내 미정발">미정발</span>` : ""}</p>
+                  <p>${escapeHtml(displayVolumeLabel(v, sssCount, exCount, sajokCount))} · ${formatDate(v.published_at)}${v.is_unreleased ? ` <span class="badge-unreleased" title="현지 발매 · 국내 미정발">미정발</span>` : ""}</p>
                 </div>
               </li>`
               )
@@ -389,6 +429,87 @@ export async function renderSeriesDetail(root, { id }) {
   function wireEditForm() {
     const volsBox = root.querySelector("#edit-vols");
     if (!volsBox) return;
+
+    const SOURCE_LABEL = { admin: "직접", user: "요청", auto: "자동" };
+
+    function renderAliasList(aliases) {
+      const box = root.querySelector("#alias-list");
+      if (!box) return;
+      series.search_aliases = aliases || [];
+      if (!series.search_aliases.length) {
+        box.innerHTML = `<li class="muted">등록된 별칭이 없습니다.</li>`;
+        return;
+      }
+      box.innerHTML = series.search_aliases
+        .map((a) => {
+          const src = SOURCE_LABEL[a.source] || a.source;
+          const canRemove = a.source !== "auto";
+          return `<li class="alias-list__item" data-alias-id="${escapeAttr(a.id)}">
+            <span><strong>${escapeHtml(a.alias)}</strong> <span class="muted">(${src})</span></span>
+            ${
+              canRemove
+                ? `<button type="button" class="btn btn--ghost btn--sm" data-alias-remove="${escapeAttr(a.id)}">삭제</button>`
+                : ""
+            }
+          </li>`;
+        })
+        .join("");
+      box.querySelectorAll("[data-alias-remove]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await api.deleteSeriesAlias(id, btn.dataset.aliasRemove);
+            series.search_aliases = (series.search_aliases || []).filter(
+              (a) => a.id !== btn.dataset.aliasRemove
+            );
+            renderAliasList(series.search_aliases);
+            toast("별칭을 삭제했습니다", "ok");
+          } catch (ex) {
+            toast(ex.message, "error");
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    root.querySelector("#alias-add")?.addEventListener("click", async () => {
+      const input = root.querySelector("#alias-input");
+      const alias = input?.value.trim() || "";
+      if (!alias) {
+        toast("줄임말·별칭을 입력하세요", "error");
+        return;
+      }
+      try {
+        const res = await api.addSeriesAlias(id, alias);
+        renderAliasList(res.search_aliases || []);
+        if (input) input.value = "";
+        toast("별칭을 추가했습니다", "ok");
+      } catch (ex) {
+        toast(ex.message, "error");
+      }
+    });
+    root.querySelector("#alias-input")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        root.querySelector("#alias-add")?.click();
+      }
+    });
+    root.querySelectorAll("[data-alias-remove]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.deleteSeriesAlias(id, btn.dataset.aliasRemove);
+          series.search_aliases = (series.search_aliases || []).filter(
+            (a) => a.id !== btn.dataset.aliasRemove
+          );
+          renderAliasList(series.search_aliases);
+          toast("별칭을 삭제했습니다", "ok");
+        } catch (ex) {
+          toast(ex.message, "error");
+          btn.disabled = false;
+        }
+      });
+    });
 
     function reindex() {
       volsBox.querySelectorAll(".manual-vol-row").forEach((row, i) => {
@@ -634,6 +755,7 @@ export async function renderSeriesDetail(root, { id }) {
           published_at: row.querySelector(".manual-vol-date").value || null,
           cover_url: row.querySelector(".manual-vol-cover").value.trim() || null,
           is_unreleased: !!row.querySelector(".manual-vol-unreleased-check")?.checked,
+          label: row.querySelector(".manual-vol-label")?.value.trim() || null,
         };
       });
       const saveBtn = root.querySelector("#edit-save");
@@ -672,9 +794,29 @@ export async function renderSeriesDetail(root, { id }) {
       return leave;
     });
 
-    root.querySelectorAll(".volume-item").forEach((li) => {
+    const items = [...root.querySelectorAll(".volume-item")];
+    items.forEach((li, index) => {
       const volumeId = li.dataset.vid;
       const input = li.querySelector("input");
+      input.addEventListener("click", (e) => {
+        if (e.shiftKey && lastReadClickIndex != null && lastReadClickIndex !== index) {
+          const start = Math.min(lastReadClickIndex, index);
+          const end = Math.max(lastReadClickIndex, index);
+          const checked = input.checked;
+          for (let i = start; i <= end; i++) {
+            const row = items[i];
+            if (!row) continue;
+            const vid = row.dataset.vid;
+            const cb = row.querySelector("input");
+            readMap.set(vid, checked);
+            if (cb) cb.checked = checked;
+            row.classList.toggle("is-read", checked);
+          }
+          markDirty(true);
+          updateProgressLabel();
+        }
+        lastReadClickIndex = index;
+      });
       input.addEventListener("change", () => {
         readMap.set(volumeId, input.checked);
         li.classList.toggle("is-read", input.checked);
@@ -684,29 +826,11 @@ export async function renderSeriesDetail(root, { id }) {
     });
 
     root.querySelector("#select-all").addEventListener("click", () => {
-      for (const volumeId of readMap.keys()) readMap.set(volumeId, true);
+      const values = [...readMap.values()];
+      const allOn = values.length > 0 && values.every(Boolean);
+      for (const volumeId of readMap.keys()) readMap.set(volumeId, !allOn);
       markDirty(true);
       paint();
-    });
-    root.querySelector("#clear-all").addEventListener("click", () => {
-      for (const volumeId of readMap.keys()) readMap.set(volumeId, false);
-      markDirty(true);
-      paint();
-    });
-
-    root.querySelector("#mark-upto")?.addEventListener("click", () => {
-      const n = Number(root.querySelector("#mark-upto-n")?.value);
-      if (!n || n < 1) {
-        toast("권번호를 입력하세요", "error");
-        return;
-      }
-      for (const v of series.volumes) {
-        readMap.set(v.id, v.volume_number <= n);
-      }
-      markDirty(true);
-      paint();
-      const input = root.querySelector("#mark-upto-n");
-      if (input) input.value = String(n);
     });
 
     root.querySelector("#save-reads").addEventListener("click", async () => {
@@ -812,31 +936,16 @@ export async function renderSeriesDetail(root, { id }) {
     });
 
     root.querySelector("#request-edit")?.addEventListener("click", async () => {
-      const note = prompt("수정이 필요한 내용을 적어 주세요") || "";
+      const note = prompt("수정이 필요한 내용을 적어 주세요");
+      if (note === null) return;
       try {
         await api.createCatalogRequest({
           request_type: "edit",
           series_id: id,
           title: series.title,
-          note: note || null,
+          note: note.trim() || null,
         });
         toast("수정 요청을 보냈습니다", "ok");
-      } catch (ex) {
-        toast(ex.message, "error");
-      }
-    });
-
-    root.querySelector("#request-delete")?.addEventListener("click", async () => {
-      if (!confirm(`‘${series.title}’ 삭제 요청을 보낼까요?`)) return;
-      const note = prompt("삭제 사유 (선택)") || null;
-      try {
-        await api.createCatalogRequest({
-          request_type: "delete",
-          series_id: id,
-          title: series.title,
-          note,
-        });
-        toast("삭제 요청을 보냈습니다", "ok");
       } catch (ex) {
         toast(ex.message, "error");
       }

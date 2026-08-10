@@ -724,7 +724,8 @@ pub async fn import_series(
             &group.aladin_series_id,
             first_published_at,
             latest_published_at,
-            group.cover_url.as_deref(),
+            // 대표 표지는 비워 두고 목록/상세는 최신 권 표지를 쓴다.
+            None,
         )
         .await?
     };

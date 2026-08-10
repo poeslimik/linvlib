@@ -8,6 +8,7 @@ import { renderTierlist } from "./pages/tierlist.js";
 import { renderMypage } from "./pages/mypage.js";
 import { renderAdmin } from "./pages/admin.js";
 import { renderVerify } from "./pages/verify.js";
+import { renderResetPassword } from "./pages/reset-password.js";
 import { renderTerms, renderPrivacy } from "./pages/legal.js";
 
 route("/", async (root) => {
@@ -17,6 +18,7 @@ route("/", async (root) => {
 
 route("/login", renderHome);
 route("/verify", renderVerify);
+route("/reset-password", renderResetPassword);
 route("/terms", renderTerms);
 route("/privacy", renderPrivacy);
 route("/series", renderSeriesList, { auth: true });
