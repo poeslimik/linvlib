@@ -13,7 +13,7 @@ use crate::{
     error::{AppError, AppResult},
     models::{AdminStatusResponse, BatchSearchAliasRequest, BatchSearchBundleRequest, UserResponse},
     repositories,
-    services::{aladin, backup, quota, search_keys},
+    services::{aladin, backup, new_releases, quota, search_keys},
     state::AppState,
 };
 
@@ -26,6 +26,7 @@ pub async fn status(
     let pending = repositories::list_catalog_requests_admin(&state.pool, Some("pending"))
         .await?
         .len() as i64;
+    let pending_suggestions = repositories::count_pending_new_release_suggestions(&state.pool).await?;
     let users = repositories::list_users(&state.pool).await?;
     let manual_series_count = repositories::count_manual_series(&state.pool).await?;
     let backups = backup::list_backups(&state).await.unwrap_or_default();
@@ -51,6 +52,7 @@ pub async fn status(
         backup_count: backups.len() as i64,
         backup_retain_days: state.config.backup_retain_days,
         pending_requests: pending,
+        pending_suggestions,
         user_count: users.len() as i64,
         manual_series_count,
     }))
@@ -103,7 +105,50 @@ pub async fn trigger_refresh(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
 ) -> AppResult<Json<crate::models::BulkRefreshResponse>> {
-    let response = aladin::refresh_all_aladin(&state).await?;
+    let response = new_releases::refresh(&state).await?;
+    Ok(Json(response))
+}
+
+pub async fn list_new_release_suggestions(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+) -> AppResult<Json<Vec<crate::models::NewReleaseSuggestionItem>>> {
+    let items = repositories::list_new_release_suggestions(&state.pool, Some("pending")).await?;
+    Ok(Json(items))
+}
+
+pub async fn dismiss_new_release_suggestion(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path(id): Path<uuid::Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    repositories::set_new_release_suggestion_status(&state.pool, id, "dismissed").await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn import_new_release_suggestion(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Path(id): Path<uuid::Uuid>,
+) -> AppResult<Json<crate::models::ImportResponse>> {
+    let suggestion = repositories::find_new_release_suggestion(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("suggestion not found".into()))?;
+    if suggestion.status == "imported" {
+        return Err(AppError::BadRequest("already imported".into()));
+    }
+    let response = aladin::import_series(
+        &state,
+        suggestion.aladin_series_id.clone(),
+        if suggestion.aladin_series_id.is_some() {
+            None
+        } else {
+            Some(suggestion.sample_item_id.clone())
+        },
+        Some(suggestion.title.clone()),
+    )
+    .await?;
+    repositories::set_new_release_suggestion_status(&state.pool, id, "imported").await?;
     Ok(Json(response))
 }
 

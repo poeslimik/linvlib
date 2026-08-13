@@ -192,6 +192,11 @@ export const api = {
   adminUsers: () => request("/admin/users"),
   adminManualSeries: () => request("/admin/manual-series"),
   adminRefresh: () => request("/admin/refresh", { method: "POST" }),
+  adminNewReleases: () => request("/admin/new-releases"),
+  importNewRelease: (id) =>
+    request(`/admin/new-releases/${id}/import`, { method: "POST" }),
+  dismissNewRelease: (id) =>
+    request(`/admin/new-releases/${id}`, { method: "DELETE" }),
   adminBackups: () => request("/admin/backups"),
   adminCreateBackup: () => request("/admin/backups", { method: "POST" }),
   adminDeleteBackup: (name) =>

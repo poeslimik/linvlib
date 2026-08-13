@@ -78,6 +78,18 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/admin/refresh", post(handlers::admin::trigger_refresh))
         .route(
+            "/admin/new-releases",
+            get(handlers::admin::list_new_release_suggestions),
+        )
+        .route(
+            "/admin/new-releases/{id}/import",
+            post(handlers::admin::import_new_release_suggestion),
+        )
+        .route(
+            "/admin/new-releases/{id}",
+            delete(handlers::admin::dismiss_new_release_suggestion),
+        )
+        .route(
             "/admin/search-aliases",
             post(handlers::admin::batch_search_aliases),
         )

@@ -199,7 +199,7 @@ export async function renderSeriesList(root) {
             getUser()?.is_admin
               ? `<div class="page__head--actions">
             <a class="btn btn--primary btn--sm" href="/import" data-link>작품 추가</a>
-            <button type="button" class="btn btn--ghost btn--sm" id="refresh-all-aladin" title="완결·번역 중단 작품을 제외하고 알라딘 권 목록을 다시 가져옵니다">
+            <button type="button" class="btn btn--ghost btn--sm" id="refresh-all-aladin" title="알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신합니다">
               알라딘 신간 갱신
             </button>
           </div>`
@@ -473,7 +473,7 @@ export async function renderSeriesList(root) {
   root.querySelector("#refresh-all-aladin")?.addEventListener("click", async () => {
     if (
       !confirm(
-        "알라딘에서 가져온 모든 작품의 권 목록을 다시 가져올까요?\n작품 수에 따라 수 분이 걸릴 수 있습니다."
+        "알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신할까요?\n목록에 없는 신간은 관리 → 추천에 추가됩니다."
       )
     ) {
       return;
@@ -485,7 +485,8 @@ export async function renderSeriesList(root) {
     try {
       const res = await api.adminRefresh();
       toast(
-        `신간 갱신 완료: ${res.refreshed}/${res.total} 성공` +
+        `신간 갱신: 스캔 ${res.scanned_items ?? 0} · 갱신 ${res.refreshed}/${res.matched_series ?? res.total}` +
+          (res.suggested ? ` · 추천 ${res.suggested}` : "") +
           (res.failed ? ` · 실패 ${res.failed}` : ""),
         res.failed ? "info" : "ok"
       );

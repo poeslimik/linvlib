@@ -597,10 +597,33 @@ pub struct BulkRefreshItem {
 
 #[derive(Debug, Serialize)]
 pub struct BulkRefreshResponse {
-    pub total: i64,
+    /// New-release items fetched from Aladin ItemList.
+    pub scanned_items: i64,
+    /// Unique catalog series matched from those items.
+    pub matched_series: i64,
     pub refreshed: i64,
     pub failed: i64,
+    /// Catalog-missing candidates upserted as pending suggestions.
+    pub suggested: i64,
+    /// Back-compat for older UI: same as matched_series.
+    pub total: i64,
     pub items: Vec<BulkRefreshItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NewReleaseSuggestionItem {
+    pub id: Uuid,
+    pub suggestion_key: String,
+    pub aladin_series_id: Option<String>,
+    pub sample_item_id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub cover_url: Option<String>,
+    pub pub_date: Option<String>,
+    pub status: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -668,6 +691,7 @@ pub struct AdminStatusResponse {
     pub backup_count: i64,
     pub backup_retain_days: i64,
     pub pending_requests: i64,
+    pub pending_suggestions: i64,
     pub user_count: i64,
     pub manual_series_count: i64,
 }

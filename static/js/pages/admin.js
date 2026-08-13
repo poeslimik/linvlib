@@ -17,6 +17,7 @@ const STATUS_LABEL = {
 const TABS = [
   { id: "status", label: "상태" },
   { id: "requests", label: "요청" },
+  { id: "suggestions", label: "추천" },
   { id: "manuals", label: "직접 등록" },
   { id: "users", label: "사용자" },
   { id: "backups", label: "백업" },
@@ -51,6 +52,7 @@ export async function renderAdmin(root) {
   let status = null;
   let requests = [];
   let requestHistory = [];
+  let suggestions = [];
   let users = [];
   let manuals = [];
   let backups = [];
@@ -78,6 +80,8 @@ export async function renderAdmin(root) {
     try {
       if (tab === "requests") {
         await loadRequests();
+      } else if (tab === "suggestions") {
+        suggestions = await api.adminNewReleases();
       } else if (tab === "users") {
         users = await api.adminUsers();
       } else if (tab === "manuals") {
@@ -104,12 +108,14 @@ export async function renderAdmin(root) {
 
   function tabNav() {
     const pending = status?.pending_requests || 0;
+    const pendingSuggestions = status?.pending_suggestions ?? suggestions.length;
     const manualCount = status?.manual_series_count ?? manuals.length;
     const backupCount = status?.backup_count ?? backups.length;
     return `<nav class="admin-tabs" role="tablist" aria-label="관리 메뉴">
       ${TABS.map((t) => {
         let label = t.label;
         if (t.id === "requests" && pending) label += ` (${pending})`;
+        if (t.id === "suggestions" && pendingSuggestions) label += ` (${pendingSuggestions})`;
         if (t.id === "manuals") label += ` (${manualCount})`;
         if (t.id === "backups") label += ` (${backupCount})`;
         return `<button type="button" role="tab" class="admin-tabs__item ${
@@ -125,12 +131,13 @@ export async function renderAdmin(root) {
       <section class="panel" aria-labelledby="admin-status-title">
         <div class="admin-section-head">
           <h2 id="admin-status-title">상태</h2>
-          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" title="연재중·완결(번역 미완)만 대상. 완결·번역 중단·연재 중단 등은 제외">지금 신간 갱신</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" title="알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신하고, 없는 작품은 추천에 넣습니다">지금 신간 갱신</button>
         </div>
         <dl class="detail-facts">
           <div><dt>서버 시각</dt><dd>${escapeHtml(status.server_time_kst || "—")}</dd></div>
           <div><dt>오늘 쿼터 (${escapeHtml(status.quota_date)})</dt><dd>사용 ${status.quota_used} · 남음 ${status.quota_remaining ?? Math.max(0, status.quota_soft - status.quota_used)} / 소프트 ${status.quota_soft} (한도 ${status.quota_hard})</dd></div>
           <div><dt>대기 요청</dt><dd>${status.pending_requests}</dd></div>
+          <div><dt>신간 추천</dt><dd>${status.pending_suggestions ?? 0}</dd></div>
           <div><dt>직접 등록 작품</dt><dd>${status.manual_series_count}</dd></div>
           <div><dt>사용자</dt><dd>${status.user_count}</dd></div>
           <div><dt>최근 갱신</dt><dd>${escapeHtml(status.last_refresh_at || "—")}</dd></div>
@@ -146,7 +153,42 @@ export async function renderAdmin(root) {
                 .join(" · ")}</p>`
             : ""
         }
-        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 남은 소프트 쿼터로 신간 갱신(자정 중단), 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 알라딘 신간 목록으로 갱신·추천(자정 중단), 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+      </section>`;
+  }
+
+  function renderSuggestions() {
+    return `
+      <section class="panel" aria-labelledby="admin-suggestions-title">
+        <h2 id="admin-suggestions-title">신간 추천</h2>
+        <p class="muted">알라딘 신간 목록에 있으나 카탈로그에 없는 작품입니다. 가져오기 또는 숨길 수 있습니다.</p>
+        ${
+          suggestions.length
+            ? `<ul class="request-list">${suggestions
+                .map(
+                  (s) => `
+              <li class="request-item">
+                <div class="admin-suggestion-row">
+                  ${cover(s.cover_url, s.title, "cover cover--sm")}
+                  <div>
+                    <strong>${escapeHtml(s.title)}</strong>
+                    <p class="muted">
+                      ${escapeHtml(s.author || "작가 미상")}
+                      ${s.publisher ? ` · ${escapeHtml(s.publisher)}` : ""}
+                      ${s.pub_date ? ` · ${escapeHtml(s.pub_date)}` : ""}
+                    </p>
+                    <p class="muted">발견 ${formatDate(s.first_seen_at)} · 최근 ${formatDate(s.last_seen_at)}</p>
+                  </div>
+                </div>
+                <div class="request-item__actions">
+                  <button type="button" class="btn btn--primary btn--sm" data-import-suggestion="${s.id}">가져오기</button>
+                  <button type="button" class="btn btn--ghost btn--sm" data-dismiss-suggestion="${s.id}">숨기기</button>
+                </div>
+              </li>`
+                )
+                .join("")}</ul>`
+            : `<p class="muted">대기 중인 신간 추천이 없습니다. 「지금 신간 갱신」을 실행하면 채워집니다.</p>`
+        }
       </section>`;
   }
 
@@ -360,6 +402,8 @@ export async function renderAdmin(root) {
     switch (tab) {
       case "requests":
         return renderRequests();
+      case "suggestions":
+        return renderSuggestions();
       case "manuals":
         return renderManuals();
       case "users":
@@ -384,7 +428,7 @@ export async function renderAdmin(root) {
               <a class="btn btn--ghost btn--sm" href="/import?tab=aliases" data-link>검색</a>
             </div>
           </div>
-          <p class="page__lead">상태 · 요청 · 카탈로그 · 사용자 · 백업을 탭으로 나눕니다.</p>
+          <p class="page__lead">상태 · 요청 · 신간 추천 · 카탈로그 · 사용자 · 백업을 탭으로 나눕니다.</p>
         </div>
         ${tabNav()}
         <div class="admin-tab-panel" role="tabpanel">${panelHtml()}</div>
@@ -432,13 +476,19 @@ export async function renderAdmin(root) {
     });
 
     root.querySelector("#admin-refresh")?.addEventListener("click", async () => {
-      if (!confirm("알라딘 작품 일괄 갱신을 지금 실행할까요? (쿼터 소모)")) return;
+      if (!confirm("알라딘 신간 목록을 가져와 카탈로그 작품을 갱신할까요?\n목록에 없는 신간은 추천 탭에 추가됩니다.")) return;
       const btn = root.querySelector("#admin-refresh");
       btn.disabled = true;
       btn.textContent = "갱신 중…";
       try {
         const res = await api.adminRefresh();
-        toast(`갱신 ${res.refreshed}/${res.total} · 실패 ${res.failed}`, "ok");
+        toast(
+          `스캔 ${res.scanned_items ?? 0} · 갱신 ${res.refreshed}/${res.matched_series ?? res.total}` +
+            (res.suggested ? ` · 추천 ${res.suggested}` : "") +
+            (res.failed ? ` · 실패 ${res.failed}` : ""),
+          res.failed ? "info" : "ok"
+        );
+        status = await api.adminStatus();
         await loadTabData();
         paint();
       } catch (ex) {
@@ -446,6 +496,38 @@ export async function renderAdmin(root) {
         btn.disabled = false;
         btn.textContent = "지금 신간 갱신";
       }
+    });
+
+    root.querySelectorAll("[data-import-suggestion]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          const res = await api.importNewRelease(btn.dataset.importSuggestion);
+          toast(`가져오기 완료 (${res.volume_count}권)`, "ok");
+          status = await api.adminStatus();
+          suggestions = await api.adminNewReleases();
+          paint();
+        } catch (ex) {
+          toast(ex.message, "error");
+          btn.disabled = false;
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-dismiss-suggestion]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.dismissNewRelease(btn.dataset.dismissSuggestion);
+          toast("추천에서 숨겼습니다", "ok");
+          status = await api.adminStatus();
+          suggestions = await api.adminNewReleases();
+          paint();
+        } catch (ex) {
+          toast(ex.message, "error");
+          btn.disabled = false;
+        }
+      });
     });
 
     root.querySelector("#backup-create")?.addEventListener("click", async () => {

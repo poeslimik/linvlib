@@ -2266,28 +2266,264 @@ pub async fn touch_series_refreshed(pool: &SqlitePool, series_id: Uuid) -> AppRe
     Ok(())
 }
 
-/// Aladin series ordered by oldest refresh first.
-pub async fn list_aladin_series_for_refresh(
+pub async fn series_id_for_aladin_item_id(
     pool: &SqlitePool,
-) -> AppResult<Vec<(Uuid, String, String)>> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
+    aladin_item_id: &str,
+) -> AppResult<Option<Uuid>> {
+    let row: Option<(String,)> = sqlx::query_as(
         r#"
-        SELECT id, title, aladin_series_id
-        FROM series
-        WHERE aladin_series_id NOT LIKE 'manual:%'
-          AND COALESCE(publish_status, 'ongoing') IN ('ongoing', 'complete_partial')
-        ORDER BY
-            CASE WHEN last_refreshed_at IS NULL OR last_refreshed_at = '' THEN 0 ELSE 1 END,
-            last_refreshed_at ASC,
-            title COLLATE NOCASE ASC
+        SELECT series_id FROM volumes WHERE aladin_item_id = ? LIMIT 1
         "#,
     )
-    .fetch_all(pool)
+    .bind(aladin_item_id)
+    .fetch_optional(pool)
     .await?;
+    row.map(|(id,)| parse_uuid(&id)).transpose()
+}
 
-    rows.into_iter()
-        .map(|(id, title, aladin_series_id)| Ok((parse_uuid(&id)?, title, aladin_series_id)))
-        .collect()
+pub async fn count_pending_new_release_suggestions(pool: &SqlitePool) -> AppResult<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM new_release_suggestions WHERE status = 'pending'",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_new_release_suggestions(
+    pool: &SqlitePool,
+    status: Option<&str>,
+) -> AppResult<Vec<crate::models::NewReleaseSuggestionItem>> {
+    let filter = status.map(str::trim).filter(|s| !s.is_empty());
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+    )> = match filter {
+        None | Some("pending") => {
+            sqlx::query_as(
+                r#"
+                SELECT id, suggestion_key, aladin_series_id, sample_item_id, title,
+                       author, publisher, cover_url, pub_date, status,
+                       first_seen_at, last_seen_at
+                FROM new_release_suggestions
+                WHERE status = 'pending'
+                ORDER BY last_seen_at DESC
+                LIMIT 200
+                "#,
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        Some("all") => {
+            sqlx::query_as(
+                r#"
+                SELECT id, suggestion_key, aladin_series_id, sample_item_id, title,
+                       author, publisher, cover_url, pub_date, status,
+                       first_seen_at, last_seen_at
+                FROM new_release_suggestions
+                ORDER BY last_seen_at DESC
+                LIMIT 200
+                "#,
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        Some(status) => {
+            sqlx::query_as(
+                r#"
+                SELECT id, suggestion_key, aladin_series_id, sample_item_id, title,
+                       author, publisher, cover_url, pub_date, status,
+                       first_seen_at, last_seen_at
+                FROM new_release_suggestions
+                WHERE status = ?
+                ORDER BY last_seen_at DESC
+                LIMIT 200
+                "#,
+            )
+            .bind(status)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (
+        id,
+        suggestion_key,
+        aladin_series_id,
+        sample_item_id,
+        title,
+        author,
+        publisher,
+        cover_url,
+        pub_date,
+        status,
+        first_seen_at,
+        last_seen_at,
+    ) in rows
+    {
+        out.push(crate::models::NewReleaseSuggestionItem {
+            id: parse_uuid(&id)?,
+            suggestion_key,
+            aladin_series_id,
+            sample_item_id,
+            title,
+            author,
+            publisher,
+            cover_url,
+            pub_date,
+            status,
+            first_seen_at,
+            last_seen_at,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn find_new_release_suggestion(
+    pool: &SqlitePool,
+    id: Uuid,
+) -> AppResult<Option<crate::models::NewReleaseSuggestionItem>> {
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+    )> = sqlx::query_as(
+        r#"
+        SELECT id, suggestion_key, aladin_series_id, sample_item_id, title,
+               author, publisher, cover_url, pub_date, status,
+               first_seen_at, last_seen_at
+        FROM new_release_suggestions
+        WHERE id = ?
+        "#,
+    )
+    .bind(id.to_string())
+    .fetch_optional(pool)
+    .await?;
+    let Some((
+        id,
+        suggestion_key,
+        aladin_series_id,
+        sample_item_id,
+        title,
+        author,
+        publisher,
+        cover_url,
+        pub_date,
+        status,
+        first_seen_at,
+        last_seen_at,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    Ok(Some(crate::models::NewReleaseSuggestionItem {
+        id: parse_uuid(&id)?,
+        suggestion_key,
+        aladin_series_id,
+        sample_item_id,
+        title,
+        author,
+        publisher,
+        cover_url,
+        pub_date,
+        status,
+        first_seen_at,
+        last_seen_at,
+    }))
+}
+
+pub async fn upsert_new_release_suggestion(
+    pool: &SqlitePool,
+    suggestion_key: &str,
+    aladin_series_id: Option<&str>,
+    sample_item_id: &str,
+    title: &str,
+    author: Option<&str>,
+    publisher: Option<&str>,
+    cover_url: Option<&str>,
+    pub_date: Option<&str>,
+) -> AppResult<bool> {
+    let id = Uuid::new_v4();
+    let result = sqlx::query(
+        r#"
+        INSERT INTO new_release_suggestions (
+            id, suggestion_key, aladin_series_id, sample_item_id, title,
+            author, publisher, cover_url, pub_date, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ON CONFLICT(suggestion_key) DO UPDATE SET
+            aladin_series_id = COALESCE(excluded.aladin_series_id, new_release_suggestions.aladin_series_id),
+            sample_item_id = excluded.sample_item_id,
+            title = excluded.title,
+            author = COALESCE(excluded.author, new_release_suggestions.author),
+            publisher = COALESCE(excluded.publisher, new_release_suggestions.publisher),
+            cover_url = COALESCE(excluded.cover_url, new_release_suggestions.cover_url),
+            pub_date = COALESCE(excluded.pub_date, new_release_suggestions.pub_date),
+            last_seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            status = CASE
+                WHEN new_release_suggestions.status = 'imported' THEN 'imported'
+                WHEN new_release_suggestions.status = 'dismissed' THEN 'dismissed'
+                ELSE 'pending'
+            END
+        "#,
+    )
+    .bind(id.to_string())
+    .bind(suggestion_key)
+    .bind(aladin_series_id)
+    .bind(sample_item_id)
+    .bind(title)
+    .bind(author)
+    .bind(publisher)
+    .bind(cover_url)
+    .bind(pub_date)
+    .execute(pool)
+    .await?;
+    // rows_affected == 1 means insert; == 2 means update on SQLite upsert sometimes
+    // Treat as "new pending suggestion" only when it was an insert of pending.
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn set_new_release_suggestion_status(
+    pool: &SqlitePool,
+    id: Uuid,
+    status: &str,
+) -> AppResult<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE new_release_suggestions SET
+            status = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(status)
+    .bind(id.to_string())
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("suggestion not found".into()));
+    }
+    Ok(())
 }
 
 pub async fn get_aladin_quota_used(pool: &SqlitePool, usage_date: &str) -> AppResult<i64> {

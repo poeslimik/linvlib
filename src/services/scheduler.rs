@@ -5,7 +5,7 @@ use tokio::time::sleep;
 
 use crate::{
     repositories,
-    services::{aladin, quota},
+    services::{new_releases, quota},
     state::AppState,
 };
 
@@ -14,9 +14,10 @@ const LAST_SCHEDULED_REFRESH_DATE_KEY: &str = "last_scheduled_refresh_date";
 const RUN_HOUR: u32 = 23;
 const RUN_MINUTE: u32 = 30;
 
-/// Poll every minute and run Aladin refresh once per KST day at/after 23:30,
-/// consuming whatever soft quota remains that day. Stops at KST midnight so
-/// the next day's quota is not spent.
+/// Poll every minute and run Aladin *new-release list* refresh once per KST day
+/// at/after 23:30. Matched catalog series are updated; unmatched LN titles become
+/// admin suggestions. Stops matched imports at KST midnight so the next day's
+/// quota is not spent.
 ///
 /// Last successful run date is persisted in `app_meta` so daytime restarts do not
 /// re-trigger. If the process was down at 23:30 but comes back the same evening
@@ -46,10 +47,10 @@ pub fn spawn_midnight_refresh(state: AppState) {
                 today = %today,
                 server_time = %quota::seoul_now_display(),
                 ?quota_remaining,
-                "KST 23:30 window — starting scheduled Aladin refresh (use remaining soft quota until midnight)"
+                "KST 23:30 window — starting scheduled Aladin new-release refresh"
             );
 
-            match aladin::refresh_all_aladin_bounded(&state, Some(today)).await {
+            match new_releases::refresh_bounded(&state, Some(today)).await {
                 Ok(res) => {
                     last_run_date = Some(today);
                     let _ = repositories::set_app_meta(
@@ -59,10 +60,12 @@ pub fn spawn_midnight_refresh(state: AppState) {
                     )
                     .await;
                     tracing::info!(
-                        total = res.total,
+                        total = res.matched_series,
+                        scanned = res.scanned_items,
                         refreshed = res.refreshed,
                         failed = res.failed,
-                        "scheduled Aladin refresh finished"
+                        suggested = res.suggested,
+                        "scheduled Aladin new-release refresh finished"
                     );
                 }
                 Err(err) => {

@@ -327,51 +327,29 @@ sudo systemctl stop linvlib   # 바이너리 잠김/권한 이슈 완화
 
 
 
-## 8. 알라딘 자동 갱신 · DB 백업
+## 8. 알라딘 신간 갱신 · DB 백업 · Discord
 
 | 항목 | 값 |
 | --- | --- |
-| 신간 갱신 | 매일 **KST 23:30** 시작 · **자정에 중단** · soft 쿼터 잔량만 사용 |
-| 갱신 대상 | `ongoing`, `complete_partial` (수동 시리즈 제외) |
+| 신간 갱신 | 매일 **KST 23:30** · 알라딘 **신간 목록(ItemList)** · 매칭된 import는 **자정 중단** |
+| 갱신 대상 | 신간 목록에 뜨고 **이미 카탈로그에 있는** 작품만 (전량 검색 없음) |
+| 미등록 신간 | 관리 UI **추천** 탭에 적재 → 관리자가 가져오기/숨기기 |
 | DB 백업 | 매일 **KST 자정** 1회 |
-| 백업 보관 | **14일** (`BACKUP_RETAIN_DAYS`, 기본 14) |
-| 백업 디렉터리 | `~/linvlib/backups` (`BACKUP_DIR`, 기본 `backups`) |
-| 관리 UI | 관리 탭 → 쿼터·갱신 상태 / **백업** |
+| Discord 상태 | 매일 **KST 08:00** (`DISCORD_STATUS_WEBHOOK_URL`) |
+| 백업 보관 | **14일** (`BACKUP_RETAIN_DAYS`) |
+| 백업 디렉터리 | `~/linvlib/backups` |
 
+앱이 **실행 중에도** 백업할 수 있습니다 (SQLite 스냅샷).
 
-앱이 **실행 중에도** 백업할 수 있습니다. 내부적으로 SQLite `VACUUM INTO`로 일관된 스냅샷을 `backups/`에 저장합니다.
-
-선택 env (서버 `.env`):
+선택 env:
 
 ```env
 BACKUP_DIR=backups
 BACKUP_RETAIN_DAYS=14
+DISCORD_STATUS_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
-수동(앱 중지 **불필요**):
+### 배포 후 502 / `VersionMismatch`
 
-```bash
-# SSH — 앱이 켜져 있어도 됨. 관리 UI 「지금 백업」과 동일 계열
-cd ~/linvlib
-# 또는 관리자 API / 웹 UI 사용
-```
-
-`sqlite3` CLI로 할 때(온라인):
-
-```bash
-cd ~/linvlib
-mkdir -p backups
-stamp=$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S)
-sqlite3 linvlib.db ".backup 'backups/linvlib-$stamp.db'"
-```
-
-`cp`로 복사할 때만 앱을 잠시 멈추는 편이 안전합니다(WAL).
-
-PC로 받기: 관리 탭 다운로드, 또는
-
-```powershell
-scp -i $KEY ubuntu@${IP}:~/linvlib/backups/linvlib-YYYYMMDD-HHMMSS.db .
-```
-
----
-
+기동 로그에 `Error: VersionMismatch(N)` 이 보이면 **이미 적용된 migration N번 SQL이 바이너리와 다릅니다.**  
+해결: 적용된 `migrations/0N…sql` 을 고치지 말고, 필요하면 DB `_sqlx_migrations` 체크섬을 맞추거나(운영 주의) 스키마 변경은 **새 migration 파일**로만 추가하세요. 자세한 배경은 [ARCHITECTURE.md](ARCHITECTURE.md#마이그레이션).

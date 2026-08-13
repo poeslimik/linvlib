@@ -23,6 +23,7 @@ fn rules_of(state: &AppState) -> &TitleRules {
 
 const ALADIN_SEARCH_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemSearch.aspx";
 const ALADIN_LOOKUP_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemLookUp.aspx";
+const ALADIN_LIST_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemList.aspx";
 /// 국내도서 > 만화/라이트노벨 > 라이트 노벨
 const LIGHT_NOVEL_CATEGORY_ID: &str = "50927";
 
@@ -112,7 +113,7 @@ impl AladinItem {
     }
 
     /// 종이책 LN이거나, 허용 LN 브랜드 전자책/도서인지.
-    fn is_catalog_candidate(&self) -> bool {
+    pub(crate) fn is_catalog_candidate(&self) -> bool {
         if self.is_light_novel() || self.category_id.is_none() {
             return true;
         }
@@ -128,7 +129,7 @@ impl AladinItem {
         cat.contains("라이트") || cat.contains("장르소설")
     }
 
-    fn series_id(&self) -> Option<i64> {
+    pub(crate) fn series_id(&self) -> Option<i64> {
         self.series_info
             .as_ref()
             .or_else(|| {
@@ -857,128 +858,94 @@ pub async fn import_series(
     })
 }
 
-/// Re-import Aladin series oldest-first until soft daily quota is exhausted.
-pub async fn refresh_all_aladin(
-    state: &AppState,
-) -> AppResult<crate::models::BulkRefreshResponse> {
-    refresh_all_aladin_bounded(state, None).await
-}
+/// Fetch Aladin ItemNewAll candidates (LN paper + filtered eBook).
+pub(crate) async fn fetch_new_release_items(state: &AppState) -> AppResult<Vec<AladinItem>> {
+    const PAGE_SIZE: i64 = 50;
+    // Aladin caps list results around 1000 → 20 pages of 50.
+    const MAX_PAGES: i64 = 20;
 
-/// Like [`refresh_all_aladin`], but if `stay_on_date` is set, stop once the KST
-/// calendar day is no longer that date (so a 23:30 job cannot spend tomorrow's quota).
-pub async fn refresh_all_aladin_bounded(
-    state: &AppState,
-    stay_on_date: Option<chrono::NaiveDate>,
-) -> AppResult<crate::models::BulkRefreshResponse> {
-    use crate::models::{BulkRefreshItem, BulkRefreshResponse};
-    use std::time::Duration;
-    use tokio::time::sleep;
+    let mut all = Vec::new();
+    let mut seen = HashSet::new();
 
-    let series_list = repositories::list_aladin_series_for_refresh(&state.pool).await?;
-    let total = series_list.len() as i64;
-    let mut refreshed = 0i64;
-    let mut failed = 0i64;
-    let mut skipped = 0i64;
-    let mut items = Vec::with_capacity(series_list.len());
-    let mut stopped_for_quota = false;
-    let mut stopped_for_midnight = false;
-
-    for (idx, (series_id, title, aladin_series_id)) in series_list.into_iter().enumerate() {
-        if let Some(day) = stay_on_date {
-            if crate::services::quota::seoul_today_date() != day {
-                stopped_for_midnight = true;
-                skipped = total - (refreshed + failed);
-                tracing::info!(
-                    refreshed,
-                    failed,
-                    skipped,
-                    stay_on_date = %day,
-                    now = %crate::services::quota::seoul_now_display(),
-                    "stopping bulk refresh: KST day rolled over"
-                );
-                break;
-            }
-        }
-        if crate::services::quota::remaining_soft_quota(state).await? == 0 {
-            stopped_for_quota = true;
-            skipped = total - (refreshed + failed);
-            tracing::info!(
-                refreshed,
-                failed,
-                skipped,
-                "stopping bulk refresh: daily soft quota reached"
-            );
+    // Domestic light-novel paper books.
+    for page in 1..=MAX_PAGES {
+        let batch = fetch_item_list_page(
+            state,
+            "ItemNewAll",
+            "Book",
+            Some(LIGHT_NOVEL_CATEGORY_ID),
+            page,
+            PAGE_SIZE,
+        )
+        .await?;
+        if batch.is_empty() {
             break;
         }
-        if idx > 0 {
-            sleep(Duration::from_millis(250)).await;
+        let n = batch.len() as i64;
+        for item in batch {
+            if seen.insert(item.item_id) {
+                all.push(item);
+            }
         }
-        match import_series(
-            state,
-            Some(aladin_series_id),
-            None,
-            Some(title.clone()),
-        )
-        .await
-        {
-            Ok(res) => {
-                refreshed += 1;
-                items.push(BulkRefreshItem {
-                    series_id: res.series_id,
-                    title: res.title,
-                    ok: true,
-                    volume_count: Some(res.volume_count),
-                    error: None,
-                });
-            }
-            Err(AppError::QuotaExceeded(msg)) => {
-                failed += 1;
-                stopped_for_quota = true;
-                items.push(BulkRefreshItem {
-                    series_id,
-                    title,
-                    ok: false,
-                    volume_count: None,
-                    error: Some(msg),
-                });
-                skipped = total - (refreshed + failed);
-                break;
-            }
-            Err(err) => {
-                failed += 1;
-                tracing::warn!(%series_id, %title, error = %err, "bulk refresh failed");
-                items.push(BulkRefreshItem {
-                    series_id,
-                    title,
-                    ok: false,
-                    volume_count: None,
-                    error: Some(err.to_string()),
-                });
-            }
+        if n < PAGE_SIZE {
+            break;
         }
     }
 
-    let note = if stopped_for_midnight {
-        format!("midnight stop: refreshed={refreshed} failed={failed} deferred={skipped}")
-    } else if stopped_for_quota {
-        format!("quota pause: refreshed={refreshed} failed={failed} deferred={skipped}")
-    } else {
-        format!("complete: refreshed={refreshed} failed={failed}")
-    };
-    let _ = repositories::set_app_meta(&state.pool, "last_refresh_note", &note).await;
-    let _ = repositories::set_app_meta(
-        &state.pool,
-        "last_refresh_at",
-        &Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    )
-    .await;
+    // eBooks (no LN category id that reliably works) — filter with is_catalog_candidate.
+    for page in 1..=MAX_PAGES {
+        let batch =
+            fetch_item_list_page(state, "ItemNewAll", "eBook", None, page, PAGE_SIZE).await?;
+        if batch.is_empty() {
+            break;
+        }
+        let n = batch.len() as i64;
+        for item in batch {
+            if seen.insert(item.item_id) {
+                all.push(item);
+            }
+        }
+        if n < PAGE_SIZE {
+            break;
+        }
+    }
 
-    Ok(BulkRefreshResponse {
-        total,
-        refreshed,
-        failed,
-        items,
-    })
+    Ok(all
+        .into_iter()
+        .filter(|item| item.is_catalog_candidate())
+        .collect())
+}
+
+
+async fn fetch_item_list_page(
+    state: &AppState,
+    query_type: &str,
+    search_target: &str,
+    category_id: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> AppResult<Vec<AladinItem>> {
+    crate::services::quota::consume_one(state).await?;
+    let category = category_id.unwrap_or("0");
+    let response = state
+        .http
+        .get(ALADIN_LIST_URL)
+        .query(&[
+            ("ttbkey", state.config.aladin_ttb_key.as_str()),
+            ("QueryType", query_type),
+            ("MaxResults", &page_size.to_string()),
+            ("start", &page.to_string()),
+            ("SearchTarget", search_target),
+            ("CategoryId", category),
+            ("output", "js"),
+            ("Version", "20131101"),
+            ("OptResult", "seriesInfo"),
+            ("Cover", "Big"),
+        ])
+        .send()
+        .await?;
+    let parsed = parse_aladin_response(response).await?;
+    Ok(parsed.item.into_vec())
 }
 
 async fn resolve_search_query(

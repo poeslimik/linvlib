@@ -2243,6 +2243,12 @@ body.is-tier-dragging .tier-none {
   margin-top: 1.25rem;
 }
 
+.admin-suggestion-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
 .admin-backup-list {
   list-style: none;
   margin: 0.85rem 0 0;
