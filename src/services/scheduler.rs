@@ -16,13 +16,12 @@ const RUN_MINUTE: u32 = 30;
 
 /// Poll every minute and run Aladin *new-release list* refresh once per KST day
 /// at/after 23:30. Matched catalog series are updated; unmatched LN titles become
-/// admin suggestions. Stops matched imports at KST midnight so the next day's
-/// quota is not spent.
+/// admin suggestions.
 ///
 /// Last successful run date is persisted in `app_meta` so daytime restarts do not
 /// re-trigger. If the process was down at 23:30 but comes back the same evening
 /// (still ≥ 23:30), it catches up once.
-pub fn spawn_midnight_refresh(state: AppState) {
+pub fn spawn_scheduled_refresh(state: AppState) {
     tokio::spawn(async move {
         let mut last_run_date = load_last_run_date(&state).await;
         tracing::info!(
@@ -50,8 +49,10 @@ pub fn spawn_midnight_refresh(state: AppState) {
                 "KST 23:30 window — starting scheduled Aladin new-release refresh"
             );
 
-            match new_releases::refresh_bounded(&state, Some(today)).await {
-                Ok(res) => {
+            match new_releases::start_background(state.clone()).await {
+                Ok(start) if start.started => {
+                    // Job runs in background; mark schedule date now so we don't
+                    // spawn duplicates every minute. Failures still leave a note.
                     last_run_date = Some(today);
                     let _ = repositories::set_app_meta(
                         &state.pool,
@@ -59,21 +60,19 @@ pub fn spawn_midnight_refresh(state: AppState) {
                         &today.format("%Y-%m-%d").to_string(),
                     )
                     .await;
-                    tracing::info!(
-                        total = res.matched_series,
-                        scanned = res.scanned_items,
-                        refreshed = res.refreshed,
-                        failed = res.failed,
-                        suggested = res.suggested,
-                        "scheduled Aladin new-release refresh finished"
-                    );
+                    tracing::info!("scheduled Aladin new-release refresh started in background");
                 }
+                Ok(start) if start.already_running => {
+                    tracing::info!("scheduled refresh skipped: already running");
+                    // Keep retrying next minute only if today's scheduled flag
+                    // was not set; leave last_run_date unchanged so we can wait.
+                }
+                Ok(_) => {}
                 Err(err) => {
-                    // Leave last_run_date unchanged so we retry next minute.
                     tracing::error!(
                         error = %err,
                         server_time = %quota::seoul_now_display(),
-                        "scheduled Aladin refresh failed; will retry"
+                        "scheduled Aladin refresh failed to start; will retry"
                     );
                 }
             }

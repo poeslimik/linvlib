@@ -85,8 +85,8 @@ flowchart TD
 
 - 목록 수집: `services/aladin.rs` → `fetch_new_release_items`  
 - 매칭·갱신·추천: `services/new_releases.rs`  
-- 수동 실행: `POST /api/v1/admin/refresh`  
-- 스케줄: `services/scheduler.rs` (23:30 KST, 자정 중단)  
+- 수동 실행: `POST /api/v1/admin/refresh` → **즉시** `{ started, already_running, message }` 반환 후 백그라운드 실행 (nginx 타임아웃 회피). 진행 여부는 `GET /admin/status`의 `refresh_running`  
+- 스케줄: `services/scheduler.rs` (23:30 KST)  
 
 추천 UI: 관리 → **추천** → 가져오기 / 숨기기.
 
@@ -113,7 +113,7 @@ flowchart TD
 | 함수/모듈 | 용도 |
 |-----------|------|
 | `import_search` | 제목으로 시리즈 후보 검색 (쿼터 소모) |
-| `import_series` | 시리즈 단위로 권 upsert |
+| `import_series` | 시리즈 단위로 권 upsert (`seed_item_ids`로 ItemLookUp 보강 가능) |
 | `fetch_new_release_items` | 신간 리스트 |
 | `new_releases::refresh` | 신간 기반 카탈로그 갱신 |
 | `title_rules` + `config/title_rules.toml` | 제목 정규화·합본 제외 등 |
@@ -137,7 +137,7 @@ flowchart TD
 
 | Job | 모듈 | 기본 시각 (KST) |
 |-----|------|-----------------|
-| 신간 갱신 | `scheduler` + `new_releases` | 23:30 (자정 중단) |
+| 신간 갱신 | `scheduler` + `new_releases` | 23:30 |
 | DB 백업 | `backup` | 00:00 |
 | Discord 상태 | `status_report` | 08:00 |
 

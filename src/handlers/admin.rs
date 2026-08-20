@@ -43,6 +43,7 @@ pub async fn status(
             .collect(),
         last_refresh_at: repositories::get_app_meta(&state.pool, "last_refresh_at").await?,
         last_refresh_note: repositories::get_app_meta(&state.pool, "last_refresh_note").await?,
+        refresh_running: new_releases::is_running_persisted(&state).await,
         last_scheduled_refresh_date: repositories::get_app_meta(
             &state.pool,
             "last_scheduled_refresh_date",
@@ -104,8 +105,8 @@ pub async fn split_volumes(
 pub async fn trigger_refresh(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
-) -> AppResult<Json<crate::models::BulkRefreshResponse>> {
-    let response = new_releases::refresh(&state).await?;
+) -> AppResult<Json<crate::models::RefreshStartResponse>> {
+    let response = new_releases::start_background(state).await?;
     Ok(Json(response))
 }
 
@@ -141,9 +142,9 @@ pub async fn import_new_release_suggestion(
         &state,
         suggestion.aladin_series_id.clone(),
         if suggestion.aladin_series_id.is_some() {
-            None
+            Vec::new()
         } else {
-            Some(suggestion.sample_item_id.clone())
+            vec![suggestion.sample_item_id.clone()]
         },
         Some(suggestion.title.clone()),
     )

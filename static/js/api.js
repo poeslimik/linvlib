@@ -192,6 +192,15 @@ export const api = {
   adminUsers: () => request("/admin/users"),
   adminManualSeries: () => request("/admin/manual-series"),
   adminRefresh: () => request("/admin/refresh", { method: "POST" }),
+  /** Poll until background refresh finishes (or timeout). Returns final admin status. */
+  waitForRefreshIdle: async ({ intervalMs = 2000, maxAttempts = 270 } = {}) => {
+    for (let i = 0; i < maxAttempts; i += 1) {
+      const status = await request("/admin/status");
+      if (!status.refresh_running) return status;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    throw new Error("갱신이 오래 걸려 상태 확인을 중단했습니다. 관리 화면에서 나중에 확인해 주세요.");
+  },
   adminNewReleases: () => request("/admin/new-releases"),
   importNewRelease: (id) =>
     request(`/admin/new-releases/${id}/import`, { method: "POST" }),

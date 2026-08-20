@@ -199,8 +199,8 @@ export async function renderSeriesList(root) {
             getUser()?.is_admin
               ? `<div class="page__head--actions">
             <a class="btn btn--primary btn--sm" href="/import" data-link>작품 추가</a>
-            <button type="button" class="btn btn--ghost btn--sm" id="refresh-all-aladin" title="알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신합니다">
-              알라딘 신간 갱신
+            <button type="button" class="btn btn--ghost btn--sm" id="admin-new-release-refresh" title="알라딘 신간 목록을 백그라운드로 가져와 카탈로그 매칭 작품을 갱신합니다">
+              신간 갱신
             </button>
           </div>`
               : ""
@@ -470,26 +470,24 @@ export async function renderSeriesList(root) {
     }
   });
 
-  root.querySelector("#refresh-all-aladin")?.addEventListener("click", async () => {
+  root.querySelector("#admin-new-release-refresh")?.addEventListener("click", async () => {
     if (
       !confirm(
-        "알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신할까요?\n목록에 없는 신간은 관리 → 추천에 추가됩니다."
+        "알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신할까요?\n목록에 없는 신간은 관리 → 추천에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)"
       )
     ) {
       return;
     }
-    const btn = root.querySelector("#refresh-all-aladin");
+    const btn = root.querySelector("#admin-new-release-refresh");
     btn.disabled = true;
     const prev = btn.textContent;
     btn.textContent = "갱신 중…";
     try {
-      const res = await api.adminRefresh();
-      toast(
-        `신간 갱신: 스캔 ${res.scanned_items ?? 0} · 갱신 ${res.refreshed}/${res.matched_series ?? res.total}` +
-          (res.suggested ? ` · 추천 ${res.suggested}` : "") +
-          (res.failed ? ` · 실패 ${res.failed}` : ""),
-        res.failed ? "info" : "ok"
-      );
+      const start = await api.adminRefresh();
+      toast(start.message || "신간 갱신을 시작했습니다.", "ok");
+      const done = await api.waitForRefreshIdle();
+      const note = done.last_refresh_note ? ` · ${done.last_refresh_note}` : "";
+      toast(`신간 갱신 완료${note}`, "ok");
       await load();
     } catch (ex) {
       toast(ex.message, "error");

@@ -32,6 +32,8 @@ struct RawBundle {
     contains: Vec<String>,
     #[serde(default)]
     contains_ci: Vec<String>,
+    #[serde(default)]
+    patterns: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +209,7 @@ struct CompiledOverride {
 pub struct TitleRules {
     bundle_contains: Vec<String>,
     bundle_contains_ci: Vec<String>,
+    bundle_patterns: Vec<Regex>,
     limited_contains: Vec<String>,
     limited_patterns: Vec<Regex>,
     imprint_edition_paren: Regex,
@@ -385,6 +388,12 @@ impl TitleRules {
         Ok(Self {
             bundle_contains: raw.bundle.contains,
             bundle_contains_ci: raw.bundle.contains_ci,
+            bundle_patterns: raw
+                .bundle
+                .patterns
+                .iter()
+                .map(|p| re(p, "bundle.patterns"))
+                .collect::<Result<Vec<_>, _>>()?,
             limited_contains: raw.limited_edition.contains,
             limited_patterns,
             imprint_edition_paren: re(&raw.imprint.edition_paren, "imprint.edition_paren")?,
@@ -461,6 +470,7 @@ impl TitleRules {
         let lower = title.to_lowercase();
         self.bundle_contains.iter().any(|s| title.contains(s))
             || self.bundle_contains_ci.iter().any(|s| lower.contains(s))
+            || self.bundle_patterns.iter().any(|re| re.is_match(title))
     }
 
     pub fn is_limited_edition(&self, title: &str) -> bool {

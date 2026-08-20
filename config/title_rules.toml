@@ -5,6 +5,12 @@
 [bundle]
 contains = ["합본", "세트", " + "]
 contains_ci = ["bundle"]
+# 제목에 "세트" 표기가 빠져도 (총10권/완결) 같은 묶음 상품은 본편으로 취급하지 않음
+patterns = [
+  '\(총\s*\d+\s*권',
+  '총\s*\d+\s*권\s*/',
+  '\[\s*세트\s*\]',
+]
 
 [limited_edition]
 contains = [

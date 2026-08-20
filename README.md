@@ -113,7 +113,7 @@ linvlib/
 | 시각 | 작업 |
 |------|------|
 | **08:00** | Discord 일일 상태 (웹훅 설정 시) |
-| **23:30** | 알라딘 신간 목록 기반 갱신·추천 (자정에 매칭 import 중단) |
+| **23:30** | 알라딘 신간 목록 기반 갱신·추천 |
 | **00:00** | SQLite DB 백업 |
 
 쿼터·날짜 계산도 KST 기준입니다.
@@ -131,7 +131,7 @@ linvlib/
 | GET/POST | `/api/v1/catalog-requests` | 사용자 요청 |
 | GET | `/api/v1/imports/search` | 알라딘 검색 (로그인) |
 | POST | `/api/v1/imports` | 가져오기 (**관리자**) |
-| POST | `/api/v1/admin/refresh` | 신간 목록 갱신 (**관리자**) |
+| POST | `/api/v1/admin/refresh` | 신간 갱신 시작 (백그라운드, **관리자**) |
 | GET/POST/DELETE | `/api/v1/admin/new-releases…` | 신간 추천 (**관리자**) |
 | GET/PUT | `/api/v1/tierlist` | 티어리스트 |
 

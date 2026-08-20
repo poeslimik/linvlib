@@ -6,30 +6,91 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{NaiveDate, Utc};
+use chrono::Utc;
 use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
-    models::{BulkRefreshItem, BulkRefreshResponse},
+    models::{NewReleaseRefreshResult, RefreshStartResponse},
     repositories,
     services::aladin::{self, AladinItem},
     services::quota,
     state::AppState,
 };
 
-/// Run a full new-release refresh (manual / admin button).
-pub async fn refresh(state: &AppState) -> AppResult<BulkRefreshResponse> {
-    refresh_bounded(state, None).await
+const REFRESH_RUNNING_KEY: &str = "refresh_running";
+
+/// Start a background refresh. Returns immediately.
+///
+/// If a job is already running, `started` is false and `already_running` is true.
+pub async fn start_background(state: AppState) -> AppResult<RefreshStartResponse> {
+    if !state.refresh_gate.try_begin() {
+        return Ok(RefreshStartResponse {
+            started: false,
+            already_running: true,
+            message: "신간 갱신이 이미 진행 중입니다.".into(),
+        });
+    }
+
+    let started_at = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let _ = repositories::set_app_meta(&state.pool, REFRESH_RUNNING_KEY, "1").await;
+    let _ = repositories::set_app_meta(
+        &state.pool,
+        "last_refresh_note",
+        &format!("running: started_at={started_at}"),
+    )
+    .await;
+
+    tokio::spawn(async move {
+        let result = refresh(&state).await;
+        match &result {
+            Ok(res) => {
+                tracing::info!(
+                    scanned = res.scanned_items,
+                    matched = res.matched_series,
+                    refreshed = res.refreshed,
+                    failed = res.failed,
+                    suggested = res.suggested,
+                    "background new-release refresh finished"
+                );
+            }
+            Err(err) => {
+                let note = format!("newlist failed: {err}");
+                let _ = repositories::set_app_meta(&state.pool, "last_refresh_note", &note).await;
+                let _ = repositories::set_app_meta(
+                    &state.pool,
+                    "last_refresh_at",
+                    &Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                )
+                .await;
+                tracing::error!(error = %err, "background new-release refresh failed");
+            }
+        }
+        let _ = repositories::set_app_meta(&state.pool, REFRESH_RUNNING_KEY, "0").await;
+        state.refresh_gate.end();
+    });
+
+    Ok(RefreshStartResponse {
+        started: true,
+        already_running: false,
+        message: "신간 갱신을 백그라운드에서 시작했습니다. 완료까지 수 분 걸릴 수 있습니다.".into(),
+    })
 }
 
-/// Same as [`refresh`], but stop importing matched series after `stay_on_date`
-/// ends (used by the 23:30 KST scheduler so tomorrow's quota is not spent).
-pub async fn refresh_bounded(
-    state: &AppState,
-    stay_on_date: Option<NaiveDate>,
-) -> AppResult<BulkRefreshResponse> {
+/// Prefer this for admin status: gate (same process) or persisted flag.
+pub async fn is_running_persisted(state: &AppState) -> bool {
+    if state.refresh_gate.is_running() {
+        return true;
+    }
+    matches!(
+        repositories::get_app_meta(&state.pool, REFRESH_RUNNING_KEY).await,
+        Ok(Some(v)) if v == "1"
+    )
+}
+
+/// Run a full new-release refresh (manual / scheduled).
+pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
     let items = aladin::fetch_new_release_items(state).await?;
     let scanned_items = items.len() as i64;
 
@@ -70,8 +131,8 @@ pub async fn refresh_bounded(
 
     let suggested = upsert_suggestions(state, &suggestion_items).await?;
     let matched_series = matched_jobs.len() as i64;
-    let (refreshed, failed, results, note) =
-        refresh_matched(state, matched_jobs, stay_on_date, scanned_items, suggested).await?;
+    let (refreshed, failed, note) =
+        refresh_matched(state, matched_jobs, scanned_items, suggested).await?;
 
     let _ = repositories::set_app_meta(&state.pool, "last_refresh_note", &note).await;
     let _ = repositories::set_app_meta(
@@ -81,14 +142,12 @@ pub async fn refresh_bounded(
     )
     .await;
 
-    Ok(BulkRefreshResponse {
+    Ok(NewReleaseRefreshResult {
         scanned_items,
         matched_series,
         refreshed,
         failed,
         suggested,
-        total: matched_series,
-        items: results,
     })
 }
 
@@ -177,36 +236,18 @@ async fn upsert_suggestions(
 async fn refresh_matched(
     state: &AppState,
     matched_jobs: HashMap<Uuid, (String, Option<String>, Option<String>)>,
-    stay_on_date: Option<NaiveDate>,
     scanned_items: i64,
     suggested: i64,
-) -> AppResult<(i64, i64, Vec<BulkRefreshItem>, String)> {
+) -> AppResult<(i64, i64, String)> {
     let matched_series = matched_jobs.len() as i64;
     let mut refreshed = 0i64;
     let mut failed = 0i64;
-    let mut results = Vec::with_capacity(matched_jobs.len());
     let mut stopped_for_quota = false;
-    let mut stopped_for_midnight = false;
     let mut deferred = 0i64;
 
     for (idx, (series_id, (title, aladin_series_id, seed_item_id))) in
         matched_jobs.into_iter().enumerate()
     {
-        if let Some(day) = stay_on_date {
-            if quota::seoul_today_date() != day {
-                stopped_for_midnight = true;
-                deferred = matched_series - (refreshed + failed);
-                tracing::info!(
-                    refreshed,
-                    failed,
-                    deferred,
-                    stay_on_date = %day,
-                    now = %quota::seoul_now_display(),
-                    "stopping new-release refresh: KST day rolled over"
-                );
-                break;
-            }
-        }
         if quota::remaining_soft_quota(state).await? == 0 {
             stopped_for_quota = true;
             deferred = matched_series - (refreshed + failed);
@@ -225,53 +266,28 @@ async fn refresh_matched(
         match aladin::import_series(
             state,
             aladin_series_id.clone(),
-            seed_item_id.clone(),
+            seed_item_id.into_iter().collect(),
             Some(title.clone()),
         )
         .await
         {
-            Ok(res) => {
+            Ok(_) => {
                 refreshed += 1;
-                results.push(BulkRefreshItem {
-                    series_id: res.series_id,
-                    title: res.title,
-                    ok: true,
-                    volume_count: Some(res.volume_count),
-                    error: None,
-                });
             }
-            Err(AppError::QuotaExceeded(msg)) => {
+            Err(AppError::QuotaExceeded(_)) => {
                 failed += 1;
                 stopped_for_quota = true;
-                results.push(BulkRefreshItem {
-                    series_id,
-                    title,
-                    ok: false,
-                    volume_count: None,
-                    error: Some(msg),
-                });
                 deferred = matched_series - (refreshed + failed);
                 break;
             }
             Err(err) => {
                 failed += 1;
                 tracing::warn!(%series_id, %title, error = %err, "new-release refresh failed");
-                results.push(BulkRefreshItem {
-                    series_id,
-                    title,
-                    ok: false,
-                    volume_count: None,
-                    error: Some(err.to_string()),
-                });
             }
         }
     }
 
-    let note = if stopped_for_midnight {
-        format!(
-            "newlist midnight stop: scanned={scanned_items} matched={matched_series} refreshed={refreshed} failed={failed} deferred={deferred} suggested={suggested}"
-        )
-    } else if stopped_for_quota {
+    let note = if stopped_for_quota {
         format!(
             "newlist quota pause: scanned={scanned_items} matched={matched_series} refreshed={refreshed} failed={failed} deferred={deferred} suggested={suggested}"
         )
@@ -281,5 +297,5 @@ async fn refresh_matched(
         )
     };
 
-    Ok((refreshed, failed, results, note))
+    Ok((refreshed, failed, note))
 }

@@ -131,7 +131,9 @@ export async function renderAdmin(root) {
       <section class="panel" aria-labelledby="admin-status-title">
         <div class="admin-section-head">
           <h2 id="admin-status-title">상태</h2>
-          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" title="알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신하고, 없는 작품은 추천에 넣습니다">지금 신간 갱신</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" ${status.refresh_running ? "disabled" : ""} title="알라딘 신간 목록을 백그라운드로 가져와 카탈로그를 갱신합니다">
+            ${status.refresh_running ? "갱신 중…" : "지금 신간 갱신"}
+          </button>
         </div>
         <dl class="detail-facts">
           <div><dt>서버 시각</dt><dd>${escapeHtml(status.server_time_kst || "—")}</dd></div>
@@ -140,6 +142,7 @@ export async function renderAdmin(root) {
           <div><dt>신간 추천</dt><dd>${status.pending_suggestions ?? 0}</dd></div>
           <div><dt>직접 등록 작품</dt><dd>${status.manual_series_count}</dd></div>
           <div><dt>사용자</dt><dd>${status.user_count}</dd></div>
+          <div><dt>신간 갱신</dt><dd>${status.refresh_running ? "진행 중" : "대기"}</dd></div>
           <div><dt>최근 갱신</dt><dd>${escapeHtml(status.last_refresh_at || "—")}</dd></div>
           <div><dt>스케줄 갱신일</dt><dd>${escapeHtml(status.last_scheduled_refresh_date || "—")}</dd></div>
           <div><dt>최근 백업</dt><dd>${escapeHtml(status.last_backup_at || "—")}</dd></div>
@@ -153,7 +156,7 @@ export async function renderAdmin(root) {
                 .join(" · ")}</p>`
             : ""
         }
-        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 알라딘 신간 목록으로 갱신·추천(자정 중단), 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 알라딘 신간 목록으로 갱신·추천, 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
       </section>`;
   }
 
@@ -428,7 +431,6 @@ export async function renderAdmin(root) {
               <a class="btn btn--ghost btn--sm" href="/import?tab=aliases" data-link>검색</a>
             </div>
           </div>
-          <p class="page__lead">상태 · 요청 · 신간 추천 · 카탈로그 · 사용자 · 백업을 탭으로 나눕니다.</p>
         </div>
         ${tabNav()}
         <div class="admin-tab-panel" role="tabpanel">${panelHtml()}</div>
@@ -476,25 +478,27 @@ export async function renderAdmin(root) {
     });
 
     root.querySelector("#admin-refresh")?.addEventListener("click", async () => {
-      if (!confirm("알라딘 신간 목록을 가져와 카탈로그 작품을 갱신할까요?\n목록에 없는 신간은 추천 탭에 추가됩니다.")) return;
+      if (!confirm("알라딘 신간 목록을 가져와 카탈로그 작품을 갱신할까요?\n목록에 없는 신간은 추천 탭에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)")) return;
       const btn = root.querySelector("#admin-refresh");
       btn.disabled = true;
       btn.textContent = "갱신 중…";
       try {
-        const res = await api.adminRefresh();
-        toast(
-          `스캔 ${res.scanned_items ?? 0} · 갱신 ${res.refreshed}/${res.matched_series ?? res.total}` +
-            (res.suggested ? ` · 추천 ${res.suggested}` : "") +
-            (res.failed ? ` · 실패 ${res.failed}` : ""),
-          res.failed ? "info" : "ok"
-        );
-        status = await api.adminStatus();
+        const start = await api.adminRefresh();
+        toast(start.message || "신간 갱신을 시작했습니다.", "ok");
+        const done = await api.waitForRefreshIdle();
+        const note = done.last_refresh_note ? ` · ${done.last_refresh_note}` : "";
+        toast(`신간 갱신 완료${note}`, "ok");
+        status = done;
         await loadTabData();
         paint();
       } catch (ex) {
         toast(ex.message, "error");
-        btn.disabled = false;
-        btn.textContent = "지금 신간 갱신";
+        try {
+          status = await api.adminStatus();
+        } catch {
+          /* ignore */
+        }
+        paint();
       }
     });
 

@@ -545,10 +545,17 @@ pub async fn import_search(
 pub async fn import_series(
     state: &AppState,
     aladin_series_id: Option<String>,
-    seed_item_id: Option<String>,
+    seed_item_ids: Vec<String>,
     title_hint: Option<String>,
 ) -> AppResult<ImportResponse> {
-    let series_key = match (aladin_series_id, seed_item_id) {
+    let mut seeds: Vec<String> = seed_item_ids
+        .into_iter()
+        .filter_map(|raw| normalize_aladin_item_id(&raw))
+        .collect();
+    seeds.sort();
+    seeds.dedup();
+
+    let series_key = match (aladin_series_id, seeds.first()) {
         (Some(id), _) => id,
         (None, Some(seed)) => format!("item:{seed}"),
         (None, None) => {
@@ -571,6 +578,11 @@ pub async fn import_series(
     }
 
     let mut known_item_ids = HashSet::new();
+    for id in &seeds {
+        if let Ok(n) = id.parse::<i64>() {
+            known_item_ids.insert(n);
+        }
+    }
     let mut volume_title_keys = HashSet::new();
     let mut stored_aliases = Vec::new();
     if let Some(ref series) = existing {
@@ -615,6 +627,40 @@ pub async fn import_series(
 
     let title_rules = rules_of(state);
     let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Explicit ItemLookUp seeds first — ItemSearch often misses older eBooks.
+    for id in &seeds {
+        match lookup_item(state, id).await {
+            Ok(item) => {
+                if seen.insert(item.item_id) {
+                    items.push(item);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(item_id = %id, error = %err, "seed ItemLookUp failed");
+            }
+        }
+    }
+    if let Some(item_id) = series_key.strip_prefix("item:") {
+        if !seeds.iter().any(|s| s == item_id) {
+            match lookup_item(state, item_id).await {
+                Ok(item) => {
+                    if seen.insert(item.item_id) {
+                        items.push(item);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        item_id = %item_id,
+                        error = %err,
+                        "series_key ItemLookUp failed"
+                    );
+                }
+            }
+        }
+    }
+
     let mut seen_queries = HashSet::new();
     for query in &search_queries {
         let query = query.trim();
@@ -622,19 +668,31 @@ pub async fn import_series(
             continue;
         }
         if let Ok(extra) = search_items(state, query).await {
-            items.extend(extra);
+            for item in extra {
+                if seen.insert(item.item_id) {
+                    items.push(item);
+                }
+            }
         }
         for alt in title_rules.alternate_search_queries(query, title_hint.as_deref()) {
             if seen_queries.insert(alt.clone()) {
                 if let Ok(extra) = search_items(state, &alt).await {
-                    items.extend(extra);
+                    for item in extra {
+                        if seen.insert(item.item_id) {
+                            items.push(item);
+                        }
+                    }
                 }
             }
         }
         for arc_query in title_rules.import_arc_search_queries(query) {
             if seen_queries.insert(arc_query.clone()) {
                 if let Ok(extra) = search_items(state, &arc_query).await {
-                    items.extend(extra);
+                    for item in extra {
+                        if seen.insert(item.item_id) {
+                            items.push(item);
+                        }
+                    }
                 }
             }
         }
@@ -646,13 +704,13 @@ pub async fn import_series(
         && seen_queries.insert(raw_hint.to_string())
     {
         if let Ok(extra) = search_items(state, raw_hint).await {
-            items.extend(extra);
+            for item in extra {
+                if seen.insert(item.item_id) {
+                    items.push(item);
+                }
+            }
         }
     }
-
-    // item_id 기준 중복 제거
-    let mut seen = HashSet::new();
-    items.retain(|item| seen.insert(item.item_id));
 
     // ItemSearch가 일부 권만 줄 때(특히 전자책) 시리즈 페이지로 형제 권을 채운다.
     items = expand_aladin_series_siblings(state, items, false).await?;
@@ -716,19 +774,26 @@ pub async fn import_series(
             .await?
         }
     } else {
-        repositories::upsert_series_with_cover(
-            &state.pool,
-            Uuid::new_v4(),
-            &group.title,
-            group.author.as_deref(),
-            group.publisher.as_deref(),
-            &group.aladin_series_id,
-            first_published_at,
-            latest_published_at,
-            // 대표 표지는 비워 두고 목록/상세는 최신 권 표지를 쓴다.
-            None,
-        )
-        .await?
+        // seed-only import: attach to an already-cataloged title: key if present
+        if let Some(by_title) =
+            repositories::find_series_by_aladin_id(&state.pool, &group.aladin_series_id).await?
+        {
+            by_title
+        } else {
+            repositories::upsert_series_with_cover(
+                &state.pool,
+                Uuid::new_v4(),
+                &group.title,
+                group.author.as_deref(),
+                group.publisher.as_deref(),
+                &group.aladin_series_id,
+                first_published_at,
+                latest_published_at,
+                // 대표 표지는 비워 두고 목록/상세는 최신 권 표지를 쓴다.
+                None,
+            )
+            .await?
+        }
     };
 
     let existing_count = repositories::count_volumes(&state.pool, series.id).await?;
@@ -759,6 +824,10 @@ pub async fn import_series(
         let existing_vols = repositories::list_volumes(&state.pool, series.id, "asc").await?;
         let mut key_to_id: HashMap<(u8, u8, i64, u8, u8, u8), Uuid> = HashMap::new();
         for vol in &existing_vols {
+            // 세트/합본으로 잘못 들어온 행은 권수 키를 점유하지 않게 한다.
+            if title_rules.is_bundle_or_set(&vol.title) {
+                continue;
+            }
             if let Some(key) = volume_identity_key(&vol.title) {
                 key_to_id.entry(key).or_insert(vol.id);
             }
@@ -842,6 +911,9 @@ pub async fn import_series(
         }
     }
 
+    // 잘못 들어온 세트/합본 행은 본편이 채워진 뒤 제거
+    drop_bundle_volumes(state, series.id).await?;
+
     // 과거에 생긴 동일 권수 중복(종이/전자 등)을 정리한 뒤 권번호 재정렬
     collapse_duplicate_volumes_by_identity(state, series.id).await?;
     reconcile_volume_numbers_from_titles(state, series.id).await?;
@@ -856,6 +928,42 @@ pub async fn import_series(
         title: series.title,
         volume_count,
     })
+}
+
+/// Parse bare ItemId, `item:…`, or Aladin product URL into a numeric ItemId.
+pub fn normalize_aladin_item_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(caps) = Regex::new(r"(?i)(?:[?&]itemid=|/itemid/)(\d{5,})")
+        .ok()?
+        .captures(trimmed)
+    {
+        return Some(caps[1].to_string());
+    }
+    if let Some(id) = trimmed.strip_prefix("item:") {
+        let id = id.trim();
+        if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+            return Some(id.to_string());
+        }
+        return None;
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) && trimmed.len() >= 5 {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+async fn drop_bundle_volumes(state: &AppState, series_id: Uuid) -> AppResult<()> {
+    let volumes = repositories::list_volumes(&state.pool, series_id, "asc").await?;
+    let rules = rules_of(state);
+    for vol in volumes {
+        if rules.is_bundle_or_set(&vol.title) {
+            repositories::delete_volume(&state.pool, vol.id, series_id).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Fetch Aladin ItemNewAll candidates (LN paper + filtered eBook).
@@ -1497,6 +1605,45 @@ mod tests {
             series_info: None,
             sub_info: None,
         }
+    }
+
+    #[test]
+    fn normalize_aladin_item_id_from_url_and_bare() {
+        assert_eq!(
+            normalize_aladin_item_id(
+                "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=156790758"
+            )
+            .as_deref(),
+            Some("156790758")
+        );
+        assert_eq!(
+            normalize_aladin_item_id("164448182").as_deref(),
+            Some("164448182")
+        );
+        assert_eq!(
+            normalize_aladin_item_id("item:171163543").as_deref(),
+            Some("171163543")
+        );
+        assert_eq!(normalize_aladin_item_id("not-an-id"), None);
+    }
+
+    #[test]
+    fn treats_total_volume_set_as_bundle() {
+        assert!(is_bundle_or_set(
+            "[세트] 29세 독신은 이세계에서 자유롭게 살고…… 싶었다. (총10권/완결)"
+        ));
+        assert!(is_bundle_or_set(
+            "29세 독신은 이세계에서 자유롭게 살고…… 싶었다. (총10권/완결)"
+        ));
+        assert!(!is_bundle_or_set(
+            "29세 독신은 이세계에서 자유롭게 살고…… 싶었다. 10 (완결)"
+        ));
+        assert_eq!(
+            extract_volume_parts(
+                "29세 독신은 이세계에서 자유롭게 살고…… 싶었다. (총10권/완결)"
+            ),
+            None
+        );
     }
 
     #[test]

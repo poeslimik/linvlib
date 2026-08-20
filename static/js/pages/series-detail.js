@@ -235,7 +235,7 @@ export async function renderSeriesDetail(root, { id }) {
     const isAdmin = !!getUser()?.is_admin;
     const pubStatus = currentPublishStatus(series);
     const completeToggle = isAdmin
-      ? `<label class="publish-status-field" title="연재중·완결(번역 미완)만 일괄 갱신 대상">
+      ? `<label class="publish-status-field" title="목록·검색 표시용 발매 상태 (신간 갱신 대상과는 무관)">
            <span class="visually-hidden">발매 상태</span>
            <select id="publish-status-select" aria-label="발매 상태">
              ${PUBLISH_STATUSES.map(
@@ -250,7 +250,7 @@ export async function renderSeriesDetail(root, { id }) {
          ${
            series.is_manual
              ? ""
-             : `<button type="button" class="btn btn--ghost btn--sm" id="refresh-volumes" title="새 권만 추가 · 기존 순서·제목 유지">권 목록 갱신</button>`
+             : `<button type="button" class="btn btn--ghost btn--sm" id="refresh-volumes" title="이 작품만 알라딘에서 다시 가져와 새 권을 추가합니다">권 목록 갱신</button>`
          }
          <button type="button" class="btn btn--danger btn--sm" id="delete-series">삭제</button>
          ${completeToggle}`

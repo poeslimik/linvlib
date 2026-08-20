@@ -147,6 +147,15 @@ export async function renderImport(root) {
           <button type="submit" class="btn btn--primary">검색</button>
         </form>
         <div id="import-results"></div>
+        <section class="panel" style="margin-top:1.5rem">
+          <h2>ItemId로 가져오기</h2>
+          <p class="muted">알라딘 상품 URL 또는 ItemId를 여러 줄·쉼표로 붙여 넣으면 LookUp으로 권을 채웁니다. 검색이 빠뜨리는 전자책 시리즈에 사용하세요.</p>
+          <label class="manual-field">
+            <span>ItemId / URL</span>
+            <textarea id="seed-item-ids" rows="6" placeholder="https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=156790758&#10;164448182&#10;171163543"></textarea>
+          </label>
+          <button type="button" class="btn btn--primary" id="import-by-items">ItemId로 가져오기</button>
+        </section>
       </section>
       <section id="tab-manual" class="import-panel ${tab === "manual" ? "" : "is-hidden"}">
         <form id="manual-form" class="manual-form">
@@ -550,6 +559,30 @@ export async function renderImport(root) {
       sp.delete("tab");
       history.pushState(null, "", `/import?${sp}`);
       loadAladinAdmin();
+    });
+
+    root.querySelector("#import-by-items")?.addEventListener("click", async () => {
+      const raw = root.querySelector("#seed-item-ids")?.value || "";
+      const seeds = raw
+        .split(/[\s,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!seeds.length) {
+        toast("ItemId 또는 상품 URL을 입력하세요", "error");
+        return;
+      }
+      const btn = root.querySelector("#import-by-items");
+      btn.disabled = true;
+      btn.textContent = "가져오는 중…";
+      try {
+        const res = await api.importSeries({ seed_item_ids: seeds });
+        toast(`가져왔습니다 (${res.volume_count}권)`, "ok");
+        location.href = `/series/${res.series_id}`;
+      } catch (ex) {
+        toast(ex.message, "error");
+        btn.disabled = false;
+        btn.textContent = "ItemId로 가져오기";
+      }
     });
 
     root.querySelector("#aa-series-search")?.addEventListener("click", () => searchAliasSeries());

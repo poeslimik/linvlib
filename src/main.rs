@@ -33,6 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     sqlx::migrate!().run(&pool).await?;
 
+    // Clear stale "running" flag left by an unclean shutdown.
+    let _ = linvlib::repositories::set_app_meta(&pool, "refresh_running", "0").await;
+
     linvlib::repositories::users::ensure_admin_by_email(&pool, &config.admin_email).await?;
 
     let state = AppState::new(pool, config.clone());
@@ -40,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(n) => tracing::info!(series = n, "rebuilt auto search aliases"),
         Err(err) => tracing::warn!(error = %err, "failed to rebuild auto search aliases"),
     }
-    scheduler::spawn_midnight_refresh(state.clone());
+    scheduler::spawn_scheduled_refresh(state.clone());
     backup::spawn_daily_backup(state.clone());
     status_report::spawn_daily_status_report(state.clone());
     let app = routes::create_router(state);

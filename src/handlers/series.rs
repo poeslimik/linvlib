@@ -142,10 +142,14 @@ pub async fn import_series(
     AdminUser(_admin): AdminUser,
     Json(body): Json<ImportRequest>,
 ) -> AppResult<Json<crate::models::ImportResponse>> {
+    let mut seeds = body.seed_item_ids;
+    if let Some(id) = body.seed_item_id {
+        seeds.insert(0, id);
+    }
     let response = aladin::import_series(
         &state,
         body.aladin_series_id,
-        body.seed_item_id,
+        seeds,
         body.title,
     )
     .await?;

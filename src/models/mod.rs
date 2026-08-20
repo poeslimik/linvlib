@@ -16,9 +16,6 @@ pub const PUBLISH_STATUSES: &[&str] = &[
     "hiatus_done",
 ];
 
-/// Statuses that still expect Aladin new-volume checks.
-pub const PUBLISH_STATUSES_FOR_REFRESH: &[&str] = &["ongoing", "complete_partial"];
-
 pub fn normalize_publish_status(raw: &str) -> Option<&'static str> {
     match raw.trim() {
         "complete" => Some("complete"),
@@ -30,10 +27,6 @@ pub fn normalize_publish_status(raw: &str) -> Option<&'static str> {
         "hiatus_done" => Some("hiatus_done"),
         _ => None,
     }
-}
-
-pub fn publish_status_skips_bulk_refresh(status: &str) -> bool {
-    !PUBLISH_STATUSES_FOR_REFRESH.contains(&status)
 }
 
 pub fn publish_status_label(status: &str) -> &'static str {
@@ -512,7 +505,11 @@ pub struct ImportSearchResult {
 #[derive(Debug, Deserialize)]
 pub struct ImportRequest {
     pub aladin_series_id: Option<String>,
+    /// Single Aladin ItemId (or product URL). Prefer `seed_item_ids` for multiple.
     pub seed_item_id: Option<String>,
+    /// Explicit ItemIds / product URLs to LookUp (fills gaps ItemSearch misses).
+    #[serde(default)]
+    pub seed_item_ids: Vec<String>,
     pub title: Option<String>,
 }
 
@@ -587,16 +584,7 @@ pub struct SplitVolumesRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct BulkRefreshItem {
-    pub series_id: Uuid,
-    pub title: String,
-    pub ok: bool,
-    pub volume_count: Option<i64>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BulkRefreshResponse {
+pub struct NewReleaseRefreshResult {
     /// New-release items fetched from Aladin ItemList.
     pub scanned_items: i64,
     /// Unique catalog series matched from those items.
@@ -605,9 +593,13 @@ pub struct BulkRefreshResponse {
     pub failed: i64,
     /// Catalog-missing candidates upserted as pending suggestions.
     pub suggested: i64,
-    /// Back-compat for older UI: same as matched_series.
-    pub total: i64,
-    pub items: Vec<BulkRefreshItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefreshStartResponse {
+    pub started: bool,
+    pub already_running: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -686,6 +678,8 @@ pub struct AdminStatusResponse {
     pub recent_quota: Vec<AdminQuotaDay>,
     pub last_refresh_at: Option<String>,
     pub last_refresh_note: Option<String>,
+    /// True while a manual/scheduled new-release refresh is in progress.
+    pub refresh_running: bool,
     pub last_scheduled_refresh_date: Option<String>,
     pub last_backup_at: Option<String>,
     pub backup_count: i64,
