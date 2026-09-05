@@ -11,7 +11,7 @@ flowchart LR
   Browser["Browser SPA\nstatic/"] -->|JSON + JWT| API["Axum API\nsrc/"]
   API --> DB[(SQLite)]
   API --> Aladin["Aladin Open API"]
-  Schedulers["Background jobs\n23:30 refresh / midnight backup / 08:00 Discord"] --> API
+  Schedulers["Background jobs\nrefresh / backup / Discord / unverified cleanup"] --> API
 ```
 
 ## 실행 시 일어나는 일 (`main.rs`)
@@ -140,8 +140,10 @@ flowchart TD
 | 신간 갱신 | `scheduler` + `new_releases` | 23:30 |
 | DB 백업 | `backup` | 00:00 |
 | Discord 상태 | `status_report` | 08:00 |
+| 미인증 계정 정리 | `email` | 기동 직후 + 매시간 |
 
-마지막 실행 일자는 `app_meta` 테이블에 저장되어, 낮에 재시작해도 같은 날 중복 실행을 피합니다.
+마지막 실행 일자는 `app_meta` 테이블에 저장되어, 낮에 재시작해도 같은 날 중복 실행을 피합니다.  
+(미인증 정리는 토큰 만료 시각 기준입니다.)
 
 ## 테스트
 
@@ -154,4 +156,5 @@ cargo test
 ## 관련 문서
 
 - [README.md](../README.md) — 온보딩·환경변수  
+- [EMAIL.md](EMAIL.md) — 인증·재설정 메일 템플릿  
 - [deploy.md](deploy.md) — 서버 배포  

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>비밀번호 재설정</title>
+</head>
+<body style="margin:0;padding:0;background:#e8eef3;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e8eef3;padding:24px 12px 48px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellspacing="0" cellpadding="0" style="width:560px;max-width:100%;background:#ffffff;border-radius:14px;overflow:hidden;">
+          <tr>
+            <td style="background:#e8eef3;padding:28px 32px 22px;text-align:center;">
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:28px;font-weight:800;letter-spacing:-0.03em;color:#152238;line-height:1;">linvlib</div>
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#3a4a63;margin-top:6px;letter-spacing:0.04em;">Light novel Library</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 32px 28px;font-family:Arial,Helvetica,sans-serif;color:#152238;">
+              <h1 style="margin:0 0 16px;font-size:22px;line-height:1.35;font-weight:700;color:#152238;">비밀번호를 다시 설정할까요?</h1>
+              <p style="margin:0 0 14px;font-size:15px;line-height:1.7;color:#3a4a63;">
+                비밀번호 재설정을 요청하셨습니다.<br />
+                아래 버튼에서 새 비밀번호를 설정할 수 있습니다.
+              </p>
+              <p style="margin:0 0 28px;font-size:14px;line-height:1.6;color:#3a4a63;">
+                이 링크는 <strong style="color:#152238;">{{RESET_HOURS}}시간</strong> 동안 유효합니다.
+              </p>
+              <table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 auto 24px;">
+                <tr>
+                  <td align="center" bgcolor="#1f7a74" style="border-radius:10px;">
+                    <a href="{{LINK}}" style="display:inline-block;padding:14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">비밀번호 재설정</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0 0 18px;font-size:13px;line-height:1.65;color:#c45c48;">
+                요청하지 않았다면 이 메일을 무시하세요. 비밀번호는 변경되지 않습니다.
+              </p>
+              <p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:#6b7a90;">버튼이 보이지 않으면 아래 링크를 브라우저에 붙여 넣으세요.</p>
+              <p style="margin:0;font-size:12px;line-height:1.5;word-break:break-all;">
+                <a href="{{LINK}}" style="color:#1f7a74;text-decoration:underline;">{{LINK}}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f4f7fa;padding:20px 32px;border-top:1px solid #e2e8ef;font-family:Arial,Helvetica,sans-serif;">
+              <p style="margin:0;font-size:12px;color:#6b7a90;">
+                <span style="color:#152238;font-weight:600;">linvlib</span>
+                ·
+                <a href="{{BASE_URL}}" style="color:#1f7a74;text-decoration:none;">{{SITE_HOST}}</a>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
