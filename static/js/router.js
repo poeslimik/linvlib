@@ -42,7 +42,8 @@ export async function render() {
     const match = path.match(r.regex);
     if (!match) continue;
     if (r.auth && !localStorage.getItem("linvlib_token")) {
-      navigate("/login", { replace: true });
+      const next = encodeURIComponent(location.pathname + location.search);
+      navigate(`/login?next=${next}`, { replace: true });
       return;
     }
     const params = {};

@@ -748,3 +748,12 @@ pub struct TierlistTierInput {
     pub tier: String,
     pub series_ids: Vec<Uuid>,
 }
+
+/// Live showcase snapshot for the first-login tour (reads + tierlist of a fixed account).
+#[derive(Debug, Serialize)]
+pub struct TourDemoResponse {
+    pub display_email: String,
+    pub demo_user_email: String,
+    pub tearmoon: SeriesDetailResponse,
+    pub tierlist: TierlistResponse,
+}

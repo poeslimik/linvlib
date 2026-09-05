@@ -154,4 +154,5 @@ cargo test
 ## 관련 문서
 
 - [README.md](../README.md) — 온보딩·환경변수  
+- [TUTORIAL.md](TUTORIAL.md) — 첫 로그인 튜토리얼  
 - [deploy.md](deploy.md) — 서버 배포  

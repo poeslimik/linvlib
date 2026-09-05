@@ -80,6 +80,7 @@ export const api = {
       body: JSON.stringify({ token, password }),
     }),
   me: () => request("/auth/me"),
+  tourDemo: () => request("/tour/demo"),
   deleteAccount: (password) =>
     request("/auth/me", {
       method: "DELETE",

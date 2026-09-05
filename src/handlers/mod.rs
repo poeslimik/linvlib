@@ -6,3 +6,4 @@ pub mod media;
 pub mod search;
 pub mod series;
 pub mod tierlist;
+pub mod tour;

@@ -82,6 +82,7 @@ export function shell({ email, active, isAdmin = false }, content) {
           }
         </nav>
         <div class="topbar__user">
+          <button type="button" class="btn btn--ghost btn--sm topbar__tour" id="tour-btn" title="첫 로그인 가이드">튜토리얼</button>
           <span class="topbar__email">${escapeHtml(email || "")}</span>
           <button type="button" class="btn btn--ghost btn--sm" id="logout-btn">로그아웃</button>
         </div>
@@ -99,6 +100,15 @@ export function shell({ email, active, isAdmin = false }, content) {
 }
 
 export function bindLogout() {
+  const tourBtn = document.getElementById("tour-btn");
+  if (tourBtn && tourBtn.dataset.bound !== "1") {
+    tourBtn.dataset.bound = "1";
+    tourBtn.addEventListener("click", async () => {
+      const { startTour } = await import("./tour.js");
+      await startTour({ force: true });
+    });
+  }
+
   const btn = document.getElementById("logout-btn");
   if (!btn || btn.dataset.bound === "1") return;
   btn.dataset.bound = "1";

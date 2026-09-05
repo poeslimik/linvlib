@@ -26,3 +26,4 @@ pub mod series;
 pub mod status_report;
 pub mod tierlist;
 pub mod title_rules;
+pub mod tour;

@@ -111,6 +111,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/admin/volumes/split", post(handlers::admin::split_volumes))
         .route("/tierlist", get(handlers::tierlist::get_tierlist))
         .route("/tierlist", put(handlers::tierlist::save_tierlist))
+        .route("/tour/demo", get(handlers::tour::get_demo))
         .route("/media/proxy", get(handlers::media::proxy_image));
 
     let static_files = ServeDir::new("static")

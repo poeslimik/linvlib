@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
+import { startTour } from "../tour.js";
 import { shell, cover, escapeHtml, toast, bindLogout, publishStatusBadge, publishStatusLabel } from "../ui.js";
 
 const SORTS = [
@@ -181,6 +182,8 @@ function setTriIcon(btn, state) {
 }
 
 export async function renderSeriesList(root) {
+  // load()가 목록 쿼리로 URL을 덮어쓰기 전에 tour 플래그를 확보
+  const wantTour = new URLSearchParams(location.search).get("tour") === "1";
   const state = readParams();
   let pubMap = decodePubMap(state.ps_in, state.ps_ex);
   /** @type {{ read: TriState, rated: TriState }} */
@@ -498,4 +501,7 @@ export async function renderSeriesList(root) {
   });
 
   await load();
+  if (wantTour) {
+    await startTour({ force: true });
+  }
 }

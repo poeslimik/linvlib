@@ -29,7 +29,7 @@ export async function renderVerify(root) {
     setAuth(res.access_token, me);
     msg.textContent = "인증이 완료되었습니다. 잠시 후 이동합니다…";
     toast("이메일 인증 완료", "ok");
-    setTimeout(() => navigate("/series", { replace: true }), 800);
+    setTimeout(() => navigate("/series?tour=1", { replace: true }), 800);
   } catch (ex) {
     msg.textContent = escapeHtml(ex.message);
   }
