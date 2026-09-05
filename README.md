@@ -4,7 +4,8 @@
 작품 메타데이터는 [알라딘 Open API](https://blog.aladin.co.kr/openapi)에서 가져옵니다.
 
 > 처음 보는 분은 **[아키텍처 안내](docs/ARCHITECTURE.md)** 를 먼저 읽으면 전체 그림이 잡힙니다.  
-> 트랜잭션 메일: [docs/EMAIL.md](docs/EMAIL.md)
+> 트랜잭션 메일: [docs/EMAIL.md](docs/EMAIL.md)  
+> 첫 로그인 튜토리얼: [docs/TUTORIAL.md](docs/TUTORIAL.md)
 
 ## 무엇을 하나요?
 

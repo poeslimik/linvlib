@@ -25,6 +25,7 @@ flowchart LR
    - 신간 목록 갱신 (`services/scheduler` → `services/new_releases`)  
    - DB 백업 (`services/backup`)  
    - Discord 상태 (`services/status_report`)  
+   - 미인증 계정 정리 (`services/email` — 인증 토큰 만료 후 삭제, 기동 직후 + 매시간)  
 7. `routes::create_router` 로 HTTP 서버 listen  
 
 ## 레이어
@@ -64,7 +65,7 @@ erDiagram
 ```
 
 - `series` / `volumes` — 공유 카탈로그  
-- `series_search_aliases` — 초성·줄임말·유저/관리자 별칭  
+- `series_search_aliases` — 줄임말·유저/관리자 별칭 (띄어쓰기·특수문자 무시 매칭)  
 - `series_search_bundles` — 본편+외전처럼 **검색 시 같이 나오게** 묶음  
 - `catalog_requests` — 사용자 요청 (add / edit / other / search_improve)  
 - `new_release_suggestions` — 신간 목록에는 있는데 카탈로그에 없는 후보  
@@ -93,7 +94,7 @@ flowchart TD
 ## 검색이 동작하는 방식
 
 1. 제목 `LIKE`  
-2. `series_search_aliases` (별칭·초성)  
+2. `series_search_aliases` (별칭; 제목·별칭 모두 공백·특수문자 무시)  
 3. **작품 묶음**에 들어 있으면 동료 시리즈도 결과에 포함  
 
 관리자 일괄 도구: `/import?tab=aliases` (줄임말 + 묶음).
@@ -132,6 +133,8 @@ flowchart TD
 - `015` 검색 별칭  
 - `016` 작품 묶음  
 - `017` 신간 추천  
+- `018` 수동 시리즈 출처 표기 (`source_label` / `source_url`)  
+- `019`–`020` 튜토리얼 완료 플래그 추가 후 제거 (히스토리만 유지)  
 
 ## 백그라운드 작업
 
@@ -143,7 +146,7 @@ flowchart TD
 | 미인증 계정 정리 | `email` | 기동 직후 + 매시간 |
 
 마지막 실행 일자는 `app_meta` 테이블에 저장되어, 낮에 재시작해도 같은 날 중복 실행을 피합니다.  
-(미인증 정리는 토큰 만료 시각 기준입니다.)
+(미인증 정리는 토큰 만료 시각 기준이며 `app_meta`와 무관하게 동작합니다.)
 
 ## 테스트
 
@@ -157,4 +160,5 @@ cargo test
 
 - [README.md](../README.md) — 온보딩·환경변수  
 - [EMAIL.md](EMAIL.md) — 인증·재설정 메일 템플릿  
+- [TUTORIAL.md](TUTORIAL.md) — 첫 로그인 튜토리얼  
 - [deploy.md](deploy.md) — 서버 배포  

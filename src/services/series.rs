@@ -74,6 +74,8 @@ pub async fn get_series_detail(
         latest_published_at: series.latest_published_at,
         cover_url: series.cover_url.clone(),
         latest_cover_url,
+        source_label: series.source_label.clone(),
+        source_url: series.source_url.clone(),
         rating,
         volumes: volume_items,
         total_volumes,

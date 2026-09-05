@@ -3,9 +3,15 @@ import { setAuth, isLoggedIn } from "../auth.js";
 import { navigate } from "../router.js";
 import { escapeHtml, toast } from "../ui.js";
 
+function postAuthPath() {
+  const next = new URLSearchParams(location.search).get("next");
+  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
+  return "/series";
+}
+
 export async function renderHome(root) {
   if (isLoggedIn()) {
-    navigate("/series", { replace: true });
+    navigate(postAuthPath(), { replace: true });
     return;
   }
 
@@ -200,7 +206,7 @@ export async function renderHome(root) {
         setAuth(res.access_token, me);
         dialog.close();
         toast("환영합니다", "ok");
-        navigate("/series");
+        navigate(postAuthPath());
       } else {
         const accept_terms = fd.get("accept_terms") === "1";
         const accept_privacy = fd.get("accept_privacy") === "1";
@@ -219,7 +225,8 @@ export async function renderHome(root) {
           setAuth(res.access_token, me);
           dialog.close();
           toast(res.message || "가입이 완료되었습니다", "ok");
-          navigate("/series");
+          const dest = postAuthPath();
+          navigate(dest === "/series" ? "/series?tour=1" : dest);
         } else {
           hint.textContent = res.message || "이메일 인증이 필요합니다.";
           if (res.verification_token) {

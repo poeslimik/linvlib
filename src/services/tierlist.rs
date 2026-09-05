@@ -143,6 +143,14 @@ fn validate_gatekeepers(
     Ok(rows)
 }
 
+/// Read-only tierlist snapshot (no seed writes). Used by the first-login tour demo.
+pub async fn get_tierlist_snapshot(
+    state: &AppState,
+    user_id: Uuid,
+) -> AppResult<TierlistResponse> {
+    build_response(state, user_id).await
+}
+
 async fn build_response(state: &AppState, user_id: Uuid) -> AppResult<TierlistResponse> {
     let rows = repositories::list_tierlist_entries(&state.pool, user_id).await?;
     let mut grouped: HashMap<String, Vec<TierlistEntry>> = HashMap::new();

@@ -171,6 +171,17 @@ export async function renderImport(root) {
             <span>대표 표지 URL</span>
             <input id="manual-cover" type="url" placeholder="https://…" />
           </label>
+          <div class="manual-field-row">
+            <label class="manual-field">
+              <span>출처 문구 (선택)</span>
+              <input id="manual-source-label" type="text" placeholder="비우면 불명" />
+            </label>
+            <label class="manual-field">
+              <span>출처 링크 (선택)</span>
+              <input id="manual-source-url" type="url" placeholder="https://…" />
+            </label>
+          </div>
+          <p class="muted">문구·링크 중 하나만 있어도 표시됩니다. 둘 다 비우면 「불명」으로 표시됩니다.</p>
           <div class="manual-vols-head">
             <h2>권 목록</h2>
             <div class="manual-vols-actions">
@@ -771,6 +782,8 @@ export async function renderImport(root) {
           author: root.querySelector("#manual-author").value.trim() || null,
           publisher: root.querySelector("#manual-publisher").value.trim() || null,
           cover_url: root.querySelector("#manual-cover").value.trim() || null,
+          source_label: root.querySelector("#manual-source-label").value.trim() || null,
+          source_url: root.querySelector("#manual-source-url").value.trim() || null,
           volumes: readVolumes(),
           force: true,
         });

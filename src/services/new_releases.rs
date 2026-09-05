@@ -103,23 +103,20 @@ pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
             Some((series_id, title, catalog_key)) => {
                 let (list_aladin, list_seed) = import_keys_for_item(&item);
                 let entry = matched_jobs.entry(series_id).or_insert_with(|| {
-                    let aladin = if is_synthetic_series_key(&catalog_key) {
-                        list_aladin
-                    } else {
-                        Some(catalog_key)
-                    };
-                    let seed = if aladin.is_some() {
+                    let seed = if list_aladin.is_some() {
                         None
                     } else {
-                        list_seed.or_else(|| Some(item.item_id.to_string()))
+                        list_seed
+                            .clone()
+                            .or_else(|| Some(item.item_id.to_string()))
                     };
-                    (title, aladin, seed)
+                    (title, Some(catalog_key.clone()), seed)
                 });
                 if entry.1.is_none() {
-                    if let Some(sid) = item.series_id() {
-                        entry.1 = Some(sid.to_string());
-                        entry.2 = None;
-                    }
+                    entry.1 = Some(catalog_key);
+                }
+                if entry.2.is_none() && item.series_id().is_none() {
+                    entry.2 = list_seed.or_else(|| Some(item.item_id.to_string()));
                 }
             }
             None => {
@@ -133,6 +130,12 @@ pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
     let matched_series = matched_jobs.len() as i64;
     let (refreshed, failed, note) =
         refresh_matched(state, matched_jobs, scanned_items, suggested).await?;
+
+    if let Ok(n) = repositories::dismiss_suggestions_already_in_catalog(&state.pool).await {
+        if n > 0 {
+            tracing::info!(dismissed = n, "dismissed duplicate new-release suggestions");
+        }
+    }
 
     let _ = repositories::set_app_meta(&state.pool, "last_refresh_note", &note).await;
     let _ = repositories::set_app_meta(
@@ -149,10 +152,6 @@ pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
         failed,
         suggested,
     })
-}
-
-fn is_synthetic_series_key(key: &str) -> bool {
-    key.starts_with("item:") || key.starts_with("title:") || key.starts_with("manual:")
 }
 
 fn suggestion_key_for_item(item: &AladinItem) -> (String, Option<String>) {
@@ -202,6 +201,20 @@ async fn resolve_catalog_match(
             )));
         }
     }
+
+    let normalized = aladin::normalize_series_title(&item.title);
+    if !normalized.is_empty() {
+        if let Some(series) =
+            repositories::find_series_by_normalized_title(&state.pool, &normalized).await?
+        {
+            return Ok(Some((
+                series.id,
+                series.title.clone(),
+                series.aladin_series_id,
+            )));
+        }
+    }
+
     Ok(None)
 }
 
@@ -211,6 +224,22 @@ async fn upsert_suggestions(
 ) -> AppResult<i64> {
     let mut suggested = 0i64;
     for (key, item) in suggestion_items {
+        let item_id = item.item_id.to_string();
+        if repositories::series_id_for_aladin_item_id(&state.pool, &item_id)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
+        let normalized = aladin::normalize_series_title(&item.title);
+        if !normalized.is_empty()
+            && repositories::find_series_by_normalized_title(&state.pool, &normalized)
+                .await?
+                .is_some()
+        {
+            continue;
+        }
+
         let (_, aladin_series_id) = suggestion_key_for_item(item);
         let mut title = aladin::normalize_series_title(&item.title);
         if title.is_empty() {

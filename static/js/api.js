@@ -80,6 +80,7 @@ export const api = {
       body: JSON.stringify({ token, password }),
     }),
   me: () => request("/auth/me"),
+  tourDemo: () => request("/tour/demo"),
   deleteAccount: (password) =>
     request("/auth/me", {
       method: "DELETE",
@@ -192,14 +193,27 @@ export const api = {
   adminUsers: () => request("/admin/users"),
   adminManualSeries: () => request("/admin/manual-series"),
   adminRefresh: () => request("/admin/refresh", { method: "POST" }),
-  /** Poll until background refresh finishes (or timeout). Returns final admin status. */
-  waitForRefreshIdle: async ({ intervalMs = 2000, maxAttempts = 270 } = {}) => {
+  /**
+   * Poll until background refresh finishes.
+   * New-release jobs often take 8–15+ minutes; keep polling long enough.
+   * On timeout: if the job already finished, return status (no false error).
+   * If still running, throw with `stillRunning: true` so UI can warn without treating it as failure.
+   */
+  waitForRefreshIdle: async ({ intervalMs = 2000, maxAttempts = 900 } = {}) => {
+    let status = null;
     for (let i = 0; i < maxAttempts; i += 1) {
-      const status = await request("/admin/status");
+      status = await request("/admin/status");
       if (!status.refresh_running) return status;
       await new Promise((r) => setTimeout(r, intervalMs));
     }
-    throw new Error("갱신이 오래 걸려 상태 확인을 중단했습니다. 관리 화면에서 나중에 확인해 주세요.");
+    status = await request("/admin/status");
+    if (!status.refresh_running) return status;
+    const err = new Error(
+      "갱신이 아직 백그라운드에서 진행 중입니다. 관리 → 상태에서 완료 여부를 확인해 주세요."
+    );
+    err.stillRunning = true;
+    err.status = status;
+    throw err;
   },
   adminNewReleases: () => request("/admin/new-releases"),
   importNewRelease: (id) =>

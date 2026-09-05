@@ -152,6 +152,10 @@ pub struct SeriesRow {
     pub cover_url: Option<String>,
     #[sqlx(default)]
     pub publish_status: String,
+    #[sqlx(default)]
+    pub source_label: Option<String>,
+    #[sqlx(default)]
+    pub source_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,6 +170,9 @@ pub struct Series {
     pub created_at: DateTime<Utc>,
     pub publish_status: String,
     pub cover_url: Option<String>,
+    /// Custom attribution label (manual series). Empty/None → hide source line.
+    pub source_label: Option<String>,
+    pub source_url: Option<String>,
 }
 
 impl SeriesRow {
@@ -193,6 +200,12 @@ impl SeriesRow {
             publish_status,
             cover_url: self
                 .cover_url
+                .filter(|s| !s.trim().is_empty()),
+            source_label: self
+                .source_label
+                .filter(|s| !s.trim().is_empty()),
+            source_url: self
+                .source_url
                 .filter(|s| !s.trim().is_empty()),
         })
     }
@@ -403,6 +416,11 @@ pub struct SeriesDetailResponse {
     /// Stored series representative cover (may be null → UI falls back to latest volume)
     pub cover_url: Option<String>,
     pub latest_cover_url: Option<String>,
+    /// Custom source attribution (mainly for manual series).
+    #[serde(default)]
+    pub source_label: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
     pub rating: Rating,
     pub volumes: Vec<VolumeWithRead>,
     pub total_volumes: i64,
@@ -542,6 +560,12 @@ pub struct ManualSeriesRequest {
     pub publisher: Option<String>,
     /// Series representative cover (stored on series; preferred over volume covers in UI)
     pub cover_url: Option<String>,
+    /// Attribution text shown on detail (manual series). Empty clears.
+    #[serde(default)]
+    pub source_label: Option<String>,
+    /// Attribution link URL (manual series). Empty clears.
+    #[serde(default)]
+    pub source_url: Option<String>,
     /// Allow create even if an exact title already exists
     #[serde(default)]
     pub force: bool,
@@ -734,6 +758,15 @@ pub struct TierlistResponse {
     /// S~F 밖에 표시되는 미평가(None) 시리즈. 티어리스트 저장·이미지 내보내기 대상이 아님.
     pub none_entries: Vec<TierlistEntry>,
     pub gatekeepers: Vec<TierlistGatekeeper>,
+}
+
+/// Live showcase snapshot for the first-login tour (reads + tierlist of a fixed account).
+#[derive(Debug, Serialize)]
+pub struct TourDemoResponse {
+    pub display_email: String,
+    pub demo_user_email: String,
+    pub tearmoon: SeriesDetailResponse,
+    pub tierlist: TierlistResponse,
 }
 
 #[derive(Debug, Deserialize)]

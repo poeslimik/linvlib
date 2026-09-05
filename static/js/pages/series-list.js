@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
-import { shell, cover, escapeHtml, toast, bindLogout, publishStatusBadge, publishStatusLabel } from "../ui.js";
+import { startTour } from "../tour.js";
+import { shell, cover, escapeHtml, toast, bindLogout, publishStatusBadge, publishStatusLabel, sortDirectionIcon, rememberSeriesListUrl } from "../ui.js";
 
 const SORTS = [
   { value: "latest", label: "최신순" },
@@ -25,33 +26,6 @@ const META_FILTERS = [
 ];
 
 /** @typedef {"off"|"in"|"ex"} TriState */
-
-function sortDirectionIcon(order) {
-  const desc = order !== "asc";
-  const bars = desc
-    ? [
-        [3, 14],
-        [8, 10],
-        [13, 7],
-        [18, 4],
-      ]
-    : [
-        [3, 4],
-        [8, 7],
-        [13, 10],
-        [18, 14],
-      ];
-  const arrow = desc
-    ? `<path d="M5 3v14M5 17l-3.2-3.2M5 17l3.2-3.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`
-    : `<path d="M5 17V3M5 3l-3.2 3.2M5 3l3.2 3.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`;
-  const barPaths = bars
-    .map(
-      ([y, w]) =>
-        `<rect x="11" y="${y}" width="${w}" height="2.6" rx="1.3" fill="currentColor"/>`
-    )
-    .join("");
-  return `<svg class="sort-dir__icon" viewBox="0 0 24 22" width="22" height="20" aria-hidden="true">${arrow}${barPaths}</svg>`;
-}
 
 function triIcon(state) {
   if (state === "in") {
@@ -181,6 +155,8 @@ function setTriIcon(btn, state) {
 }
 
 export async function renderSeriesList(root) {
+  // load()가 목록 쿼리로 URL을 덮어쓰기 전에 tour 플래그를 확보
+  const wantTour = new URLSearchParams(location.search).get("tour") === "1";
   const state = readParams();
   let pubMap = decodePubMap(state.ps_in, state.ps_ex);
   /** @type {{ read: TriState, rated: TriState }} */
@@ -312,6 +288,7 @@ export async function renderSeriesList(root) {
     if (url !== location.pathname + location.search) {
       history.replaceState(null, "", url);
     }
+    rememberSeriesListUrl(url);
 
     syncSortUi(cur);
     syncFilterUi();
@@ -490,7 +467,11 @@ export async function renderSeriesList(root) {
       toast(`신간 갱신 완료${note}`, "ok");
       await load();
     } catch (ex) {
-      toast(ex.message, "error");
+      if (ex.stillRunning) {
+        toast(ex.message, "info");
+      } else {
+        toast(ex.message, "error");
+      }
     } finally {
       btn.disabled = false;
       btn.textContent = prev;
@@ -498,4 +479,7 @@ export async function renderSeriesList(root) {
   });
 
   await load();
+  if (wantTour) {
+    await startTour({ force: true });
+  }
 }

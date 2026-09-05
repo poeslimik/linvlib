@@ -14,7 +14,14 @@ use crate::{
 /// Series row columns for `SeriesRow` queries.
 const SERIES_COLS: &str = "id, title, author, publisher, aladin_series_id, \
      first_published_at, latest_published_at, created_at, cover_url, \
-     COALESCE(publish_status, 'ongoing') AS publish_status";
+     COALESCE(publish_status, 'ongoing') AS publish_status, \
+     source_label, source_url";
+
+/// Same as [`SERIES_COLS`] but qualified for joins (aliases table also has `aladin_series_id`).
+const SERIES_COLS_S: &str = "s.id, s.title, s.author, s.publisher, s.aladin_series_id, \
+     s.first_published_at, s.latest_published_at, s.created_at, s.cover_url, \
+     COALESCE(s.publish_status, 'ongoing') AS publish_status, \
+     s.source_label, s.source_url";
 
 /// Volume row columns for `VolumeRow` queries.
 const VOLUME_COLS: &str =
@@ -309,6 +316,23 @@ pub async fn delete_user(pool: &SqlitePool, user_id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
+/// Remove unverified accounts whose email verification token has expired.
+/// Admins are never deleted. Returns the number of rows removed.
+pub async fn delete_expired_unverified_users(pool: &SqlitePool) -> AppResult<u64> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM users
+        WHERE email_verified = 0
+          AND is_admin = 0
+          AND verify_token_expires_at IS NOT NULL
+          AND verify_token_expires_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn ensure_admin_by_email(pool: &SqlitePool, email: &str) -> AppResult<()> {
     sqlx::query(
         r#"
@@ -424,28 +448,35 @@ pub async fn find_series_by_aladin_id(
     }
 
     let row = sqlx::query_as::<_, SeriesRow>(
-        r#"
-        SELECT
-            s.id,
-            s.title,
-            s.author,
-            s.publisher,
-            s.aladin_series_id,
-            s.first_published_at,
-            s.latest_published_at,
-            s.created_at,
-            s.cover_url,
-            COALESCE(s.publish_status, 'ongoing') AS publish_status
+        &format!(
+            r#"
+        SELECT {SERIES_COLS_S}
         FROM series s
         INNER JOIN series_aladin_aliases a ON a.series_id = s.id
         WHERE a.aladin_series_id = ?
-        "#,
+        "#
+        ),
     )
     .bind(aladin_series_id)
     .fetch_optional(pool)
     .await?;
 
     row.map(|r| r.into_series()).transpose()
+}
+
+/// Match catalog rows keyed as `title:{normalized}` or exact title (case-insensitive).
+pub async fn find_series_by_normalized_title(
+    pool: &SqlitePool,
+    normalized_title: &str,
+) -> AppResult<Option<Series>> {
+    let normalized = normalized_title.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    if let Some(series) = find_series_by_aladin_id(pool, &format!("title:{normalized}")).await? {
+        return Ok(Some(series));
+    }
+    find_series_by_title_exact(pool, normalized).await
 }
 
 pub async fn list_series_aladin_aliases(
@@ -941,15 +972,21 @@ pub async fn update_series_meta(
     author: Option<&str>,
     publisher: Option<&str>,
     cover_url: Option<&str>,
+    source_label: Option<&str>,
+    source_url: Option<&str>,
 ) -> AppResult<Series> {
     let cover = cover_url.map(str::trim).filter(|s| !s.is_empty());
+    let label = source_label.map(str::trim).filter(|s| !s.is_empty());
+    let url = source_url.map(str::trim).filter(|s| !s.is_empty());
     let row = sqlx::query_as::<_, SeriesRow>(&format!(
         r#"
         UPDATE series SET
             title = ?,
             author = ?,
             publisher = ?,
-            cover_url = ?
+            cover_url = ?,
+            source_label = ?,
+            source_url = ?
         WHERE id = ?
         RETURNING {SERIES_COLS}
         "#
@@ -958,6 +995,8 @@ pub async fn update_series_meta(
     .bind(author)
     .bind(publisher)
     .bind(cover)
+    .bind(label)
+    .bind(url)
     .bind(series_id.to_string())
     .fetch_optional(pool)
     .await?
@@ -1528,10 +1567,34 @@ pub async fn list_series(
 
     let order_sql = match sort_key {
         "recently_read" => format!("lr.last_read_at {order_key}, base.title ASC"),
-        "popular" => format!("pop.reader_count {order_key}, base.title ASC"),
+        "popular" => format!(
+            "COALESCE(pop.score, 0) {order_key}, base.latest_published_at DESC, base.title ASC"
+        ),
         "title" => format!("base.title COLLATE NOCASE {order_key}"),
-        _ => format!("base.latest_published_at {order_key}, base.title ASC"),
+        _ => format!(
+            "base.latest_published_at {order_key}, COALESCE(pop.score, 0) DESC, base.title ASC"
+        ),
     };
+
+    // Popularity = sum of per-user rating points: None/F=1, D=2, C=3, B=4, A=5, S=6
+    const POPULARITY_JOIN: &str = r#"
+            LEFT JOIN (
+                SELECT
+                    series_id,
+                    SUM(
+                        CASE rating
+                            WHEN 'S' THEN 6
+                            WHEN 'A' THEN 5
+                            WHEN 'B' THEN 4
+                            WHEN 'C' THEN 3
+                            WHEN 'D' THEN 2
+                            ELSE 1
+                        END
+                    ) AS score
+                FROM user_series_ratings
+                GROUP BY series_id
+            ) pop ON pop.series_id = base.id
+        "#;
 
     let join_sql = match sort_key {
         "recently_read" => r#"
@@ -1543,16 +1606,9 @@ pub async fn list_series(
                 GROUP BY v.series_id
             ) lr ON lr.series_id = base.id
         "#,
-        "popular" => r#"
-            LEFT JOIN (
-                SELECT v.series_id, COUNT(DISTINCT uvr.user_id) AS reader_count
-                FROM user_volume_reads uvr
-                JOIN volumes v ON v.id = uvr.volume_id
-                WHERE uvr.is_read = 1
-                GROUP BY v.series_id
-            ) pop ON pop.series_id = base.id
-        "#,
-        _ => "",
+        "title" => "",
+        // latest + popular both need the rating score join
+        _ => POPULARITY_JOIN,
     };
 
     let list_sql = format!(
@@ -1650,30 +1706,34 @@ pub async fn direct_search_match_ids(pool: &SqlitePool, q: &str) -> AppResult<Ve
     if q.is_empty() {
         return Ok(Vec::new());
     }
-    let pattern = format!("%{q}%");
-    let rows: Vec<(String,)> = sqlx::query_as(
-        r#"
-        SELECT DISTINCT s.id
-        FROM series s
-        WHERE s.title LIKE ? COLLATE NOCASE
-           OR EXISTS (
-                SELECT 1 FROM series_search_aliases a
-                WHERE a.series_id = s.id
-                  AND (
-                    a.alias = ? COLLATE NOCASE
-                    OR a.alias LIKE ? COLLATE NOCASE
-                  )
-           )
-        "#,
-    )
-    .bind(&pattern)
-    .bind(q)
-    .bind(&pattern)
-    .fetch_all(pool)
-    .await?;
-    rows.into_iter()
-        .map(|(id,)| parse_uuid(&id))
-        .collect()
+    let needle = crate::search_text::search_norm(q);
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let series_rows: Vec<(String, String)> = sqlx::query_as("SELECT id, title FROM series")
+        .fetch_all(pool)
+        .await?;
+    let mut ids = std::collections::HashSet::new();
+    for (id, title) in series_rows {
+        if crate::search_text::norm_contains(&title, &needle) {
+            ids.insert(parse_uuid(&id)?);
+        }
+    }
+
+    let alias_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT series_id, alias FROM series_search_aliases")
+            .fetch_all(pool)
+            .await?;
+    for (sid, alias) in alias_rows {
+        if crate::search_text::norm_contains(&alias, &needle) {
+            ids.insert(parse_uuid(&sid)?);
+        }
+    }
+
+    let mut out: Vec<Uuid> = ids.into_iter().collect();
+    out.sort_by_key(|id| id.to_string());
+    Ok(out)
 }
 
 pub async fn expand_search_bundle_ids(pool: &SqlitePool, ids: &[Uuid]) -> AppResult<Vec<Uuid>> {
@@ -1819,54 +1879,65 @@ pub async fn merge_search_bundle(pool: &SqlitePool, series_ids: &[Uuid]) -> AppR
 
 pub async fn search_series(pool: &SqlitePool, query: &str) -> AppResult<Vec<(Uuid, String, Option<String>, i64)>> {
     let q = query.trim();
-    let pattern = format!("%{q}%");
-    let exact = q.to_string();
-    let prefix = format!("{q}%");
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = crate::search_text::search_norm(q);
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(&format!(
+    let series_rows: Vec<(String, String, Option<String>)> = sqlx::query_as(&format!(
         r#"
-        SELECT
-            s.id,
-            s.title,
-            {SERIES_DISPLAY_COVER_SQL} AS latest_cover_url,
-            CASE
-                WHEN s.title = ? THEN 100
-                WHEN EXISTS (
-                    SELECT 1 FROM series_search_aliases a
-                    WHERE a.series_id = s.id AND a.alias = ? COLLATE NOCASE
-                ) THEN 95
-                WHEN s.title LIKE ? ESCAPE '\' THEN 80
-                ELSE 50
-            END AS score
+        SELECT s.id, s.title, {SERIES_DISPLAY_COVER_SQL} AS latest_cover_url
         FROM series s
-        WHERE s.title LIKE ? ESCAPE '\'
-           OR EXISTS (
-                SELECT 1 FROM series_search_aliases a
-                WHERE a.series_id = s.id
-                  AND (
-                    a.alias = ? COLLATE NOCASE
-                    OR a.alias LIKE ? ESCAPE '\' COLLATE NOCASE
-                  )
-           )
-        ORDER BY score DESC, s.title COLLATE NOCASE ASC
-        LIMIT 50
         "#
     ))
-    .bind(&exact)
-    .bind(&exact)
-    .bind(&prefix)
-    .bind(&pattern)
-    .bind(&exact)
-    .bind(&pattern)
     .fetch_all(pool)
     .await?;
 
+    let alias_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT series_id, alias FROM series_search_aliases")
+            .fetch_all(pool)
+            .await?;
+    let mut aliases_by_series: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (sid, alias) in alias_rows {
+        aliases_by_series.entry(sid).or_default().push(alias);
+    }
+
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (id, title, cover, score) in rows {
+    for (id, title, cover) in series_rows {
+        let title_norm = crate::search_text::search_norm(&title);
+        let aliases = aliases_by_series.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
+        let alias_exact = aliases
+            .iter()
+            .any(|a| crate::search_text::search_norm(a) == needle);
+        let alias_hit = aliases
+            .iter()
+            .any(|a| crate::search_text::norm_contains(a, &needle));
+
+        let score = if title_norm == needle {
+            100
+        } else if alias_exact {
+            95
+        } else if title_norm.starts_with(&needle) {
+            80
+        } else if title_norm.contains(&needle) || alias_hit {
+            50
+        } else {
+            continue;
+        };
+
         let uuid = parse_uuid(&id)?;
         seen.insert(uuid);
         results.push((uuid, title, cover, score));
+    }
+
+    results.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.1.cmp(&b.1)));
+    if results.len() > 50 {
+        results.truncate(50);
     }
 
     let match_ids: Vec<Uuid> = results.iter().map(|(id, ..)| *id).collect();
@@ -1883,8 +1954,6 @@ pub async fn search_series(pool: &SqlitePool, query: &str) -> AppResult<Vec<(Uui
     }
 
     results.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.1.cmp(&b.1)));
-    results.truncate(50);
-
     Ok(results)
 }
 
@@ -2247,9 +2316,10 @@ pub async fn has_tierlist_entries(pool: &SqlitePool, user_id: Uuid) -> AppResult
 
 pub mod users {
     pub use super::{
-        count_admins, create_user, delete_user, ensure_admin_by_email, find_by_email, find_by_id,
-        list_users, refresh_unverified_registration, reset_password_by_token, set_reset_token,
-        set_verify_token, verify_email_by_token,
+        count_admins, create_user, delete_expired_unverified_users, delete_user,
+        ensure_admin_by_email, find_by_email, find_by_id, list_users,
+        refresh_unverified_registration, reset_password_by_token, set_reset_token, set_verify_token,
+        verify_email_by_token,
     };
 }
 
@@ -2524,6 +2594,48 @@ pub async fn set_new_release_suggestion_status(
         return Err(AppError::NotFound("suggestion not found".into()));
     }
     Ok(())
+}
+
+/// Dismiss pending suggestions that already exist in the catalog (by item id or title).
+pub async fn dismiss_suggestions_already_in_catalog(pool: &SqlitePool) -> AppResult<u64> {
+    let result = sqlx::query(
+        r#"
+        UPDATE new_release_suggestions SET
+            status = 'dismissed',
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        WHERE status = 'pending'
+          AND (
+            sample_item_id IN (SELECT aladin_item_id FROM volumes)
+            OR title IN (SELECT title FROM series)
+            OR title IN (
+                SELECT REPLACE(aladin_series_id, 'title:', '')
+                FROM series
+                WHERE aladin_series_id LIKE 'title:%'
+            )
+          )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Pending suggestion sample item ids for a catalog title (manual refresh seeds).
+pub async fn pending_suggestion_item_ids_for_title(
+    pool: &SqlitePool,
+    title: &str,
+) -> AppResult<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT sample_item_id
+        FROM new_release_suggestions
+        WHERE status = 'pending' AND title = ? COLLATE NOCASE
+        "#,
+    )
+    .bind(title.trim())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 pub async fn get_aladin_quota_used(pool: &SqlitePool, usage_date: &str) -> AppResult<i64> {

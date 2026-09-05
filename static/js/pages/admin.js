@@ -492,11 +492,16 @@ export async function renderAdmin(root) {
         await loadTabData();
         paint();
       } catch (ex) {
-        toast(ex.message, "error");
-        try {
-          status = await api.adminStatus();
-        } catch {
-          /* ignore */
+        if (ex.stillRunning) {
+          toast(ex.message, "info");
+          status = ex.status || status;
+        } else {
+          toast(ex.message, "error");
+          try {
+            status = await api.adminStatus();
+          } catch {
+            /* ignore */
+          }
         }
         paint();
       }
