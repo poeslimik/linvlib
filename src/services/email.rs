@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{Mailbox, header::ContentType},
+    message::{Mailbox, MultiPart},
     transport::smtp::authentication::Credentials,
 };
 use rand::{Rng, distributions::Alphanumeric};
@@ -294,13 +294,23 @@ async fn send_verification_email(state: &AppState, user: &User, token: &str) -> 
         state.config.app_base_url,
         urlencoding_encode(token)
     );
-    send_plain_email(
+    let vars = email_vars(&link, &state.config.app_base_url, None);
+    let plain = render_template(
+        include_str!("../../templates/email/verify.txt"),
+        &vars,
+        false,
+    );
+    let html = render_template(
+        include_str!("../../templates/email/verify.html"),
+        &vars,
+        true,
+    );
+    send_auth_email(
         state,
         user,
         "[linvlib] 이메일 인증",
-        &format!(
-            "linvlib 가입을 환영합니다.\n\n아래 링크를 열어 이메일을 인증해 주세요 (48시간 유효):\n{link}\n"
-        ),
+        &plain,
+        &html,
         "verification",
         &link,
     )
@@ -313,24 +323,85 @@ async fn send_password_reset_email(state: &AppState, user: &User, token: &str) -
         state.config.app_base_url,
         urlencoding_encode(token)
     );
-    send_plain_email(
+    let vars = email_vars(
+        &link,
+        &state.config.app_base_url,
+        Some(RESET_TOKEN_HOURS.to_string()),
+    );
+    let plain = render_template(
+        include_str!("../../templates/email/reset.txt"),
+        &vars,
+        false,
+    );
+    let html = render_template(
+        include_str!("../../templates/email/reset.html"),
+        &vars,
+        true,
+    );
+    send_auth_email(
         state,
         user,
         "[linvlib] 비밀번호 재설정",
-        &format!(
-            "비밀번호 재설정을 요청하셨습니다.\n\n아래 링크에서 새 비밀번호를 설정해 주세요 ({RESET_TOKEN_HOURS}시간 유효):\n{link}\n\n요청하지 않았다면 이 메일을 무시하세요.\n"
-        ),
+        &plain,
+        &html,
         "password reset",
         &link,
     )
     .await
 }
 
-async fn send_plain_email(
+fn display_site_host(base_url: &str) -> &str {
+    base_url
+        .trim()
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .unwrap_or(base_url)
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn email_vars(
+    link: &str,
+    base_url: &str,
+    reset_hours: Option<String>,
+) -> Vec<(&'static str, String)> {
+    let base = base_url.trim_end_matches('/');
+    let mut vars = vec![
+        ("LINK", link.to_string()),
+        ("BASE_URL", base.to_string()),
+        ("SITE_HOST", display_site_host(base_url).to_string()),
+    ];
+    if let Some(hours) = reset_hours {
+        vars.push(("RESET_HOURS", hours));
+    }
+    vars
+}
+
+fn render_template(template: &str, vars: &[(&str, String)], escape_html: bool) -> String {
+    let mut out = template.to_string();
+    for (key, value) in vars {
+        let value = if escape_html {
+            html_escape(value)
+        } else {
+            value.clone()
+        };
+        out = out.replace(&format!("{{{{{key}}}}}"), &value);
+    }
+    out
+}
+
+async fn send_auth_email(
     state: &AppState,
     user: &User,
     subject: &str,
-    body: &str,
+    plain: &str,
+    html: &str,
     kind: &str,
     link: &str,
 ) -> AppResult<()> {
@@ -361,8 +432,10 @@ async fn send_plain_email(
             .parse::<Mailbox>()
             .map_err(|e| AppError::Internal(format!("invalid recipient: {e}")))?)
         .subject(subject)
-        .header(ContentType::TEXT_PLAIN)
-        .body(body.to_string())
+        .multipart(MultiPart::alternative_plain_html(
+            plain.to_string(),
+            html.to_string(),
+        ))
         .map_err(|e| AppError::Internal(format!("email build error: {e}")))?;
 
     let host = state.config.smtp_host.as_deref().unwrap();
@@ -394,4 +467,23 @@ fn urlencoding_encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Periodically purge unverified users whose verification token has expired (48h).
+pub fn spawn_unverified_user_cleanup(state: crate::state::AppState) {
+    tokio::spawn(async move {
+        // Run soon after boot, then every hour.
+        let mut first = true;
+        loop {
+            if !first {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+            first = false;
+            match crate::repositories::users::delete_expired_unverified_users(&state.pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(deleted = n, "purged expired unverified users"),
+                Err(e) => tracing::warn!(error = %e, "failed to purge expired unverified users"),
+            }
+        }
+    });
 }

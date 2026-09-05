@@ -1,6 +1,6 @@
 use linvlib::{
-    config::Config, routes, services::backup, services::scheduler, services::search_keys,
-    services::status_report, state::AppState,
+    config::Config, routes, services::backup, services::email, services::scheduler,
+    services::search_keys, services::status_report, state::AppState,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::net::SocketAddr;
@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scheduler::spawn_scheduled_refresh(state.clone());
     backup::spawn_daily_backup(state.clone());
     status_report::spawn_daily_status_report(state.clone());
+    email::spawn_unverified_user_cleanup(state.clone());
     let app = routes::create_router(state);
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
