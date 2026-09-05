@@ -11,7 +11,7 @@ flowchart LR
   Browser["Browser SPA\nstatic/"] -->|JSON + JWT| API["Axum API\nsrc/"]
   API --> DB[(SQLite)]
   API --> Aladin["Aladin Open API"]
-  Schedulers["Background jobs\n23:30 refresh / midnight backup / 08:00 Discord"] --> API
+  Schedulers["Background jobs\nrefresh / backup / Discord / unverified cleanup"] --> API
 ```
 
 ## 실행 시 일어나는 일 (`main.rs`)
