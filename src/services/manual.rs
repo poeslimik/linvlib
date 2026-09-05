@@ -87,6 +87,18 @@ pub async fn create_manual_series(
     )
     .await?;
 
+    let series = repositories::update_series_meta(
+        &state.pool,
+        series.id,
+        &series.title,
+        series.author.as_deref(),
+        series.publisher.as_deref(),
+        series.cover_url.as_deref(),
+        body.source_label.as_deref(),
+        body.source_url.as_deref(),
+    )
+    .await?;
+
     for (num, vol) in &numbered {
         let vol_id = Uuid::new_v4();
         let vol_title = volume_title(title, *num, vol);

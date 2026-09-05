@@ -566,6 +566,22 @@ pub async fn import_series(
     };
 
     let existing = repositories::find_series_by_aladin_id(&state.pool, &series_key).await?;
+    if seeds.is_empty() {
+        if let Some(ref series) = existing {
+            if let Ok(extra) =
+                repositories::pending_suggestion_item_ids_for_title(&state.pool, &series.title)
+                    .await
+            {
+                for id in extra {
+                    if let Some(normalized) = normalize_aladin_item_id(&id) {
+                        if !seeds.iter().any(|s| s == &normalized) {
+                            seeds.push(normalized);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let search_query =
         resolve_search_query(state, &series_key, title_hint.as_deref()).await?;
 
@@ -723,6 +739,20 @@ pub async fn import_series(
         select_group(&groups, &series_key, &search_query).cloned()
     }
     .ok_or_else(|| AppError::NotFound("series not found in aladin".into()))?;
+
+    // Explicit seeds (ItemLookUp / 신간 itemId) must survive group dedupe
+    // that drops lone limited editions (e.g. 8.5 초판한정).
+    for id in &seeds {
+        let Ok(n) = id.parse::<i64>() else {
+            continue;
+        };
+        if group.items.iter().any(|i| i.item_id == n) {
+            continue;
+        }
+        if let Some(item) = items.iter().find(|i| i.item_id == n) {
+            group.items.push(item.clone());
+        }
+    }
 
     // 합본/다른 에디션의 더 이른 출간일을 본권에 반영 (알라딘 재등록 날짜 오인 보정)
     let date_hints = collect_earliest_volume_dates(&items);

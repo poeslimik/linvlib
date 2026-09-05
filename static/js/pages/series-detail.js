@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
 import { onBeforeLeave } from "../router.js";
-import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, aladinSearchUrl, publishStatusBadge, publishStatusLabel } from "../ui.js";
+import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, aladinSearchUrl, publishStatusBadge, publishStatusLabel, sortDirectionIcon, seriesListReturnUrl } from "../ui.js";
 
 const RATINGS = ["None", "S", "A", "B", "C", "D", "F"];
 
@@ -182,7 +182,7 @@ async function pickSeriesTarget(promptLabel) {
 }
 
 export async function renderSeriesDetail(root, { id }) {
-  const orderParam = new URLSearchParams(location.search).get("order") || "desc";
+  let volumeOrder = new URLSearchParams(location.search).get("order") === "asc" ? "asc" : "desc";
 
   root.innerHTML = shell(
     { email: getUser()?.email, active: "series", isAdmin: !!getUser()?.is_admin },
@@ -192,7 +192,7 @@ export async function renderSeriesDetail(root, { id }) {
 
   let series;
   try {
-    series = await api.getSeries(id, orderParam);
+    series = await api.getSeries(id, volumeOrder);
   } catch (ex) {
     root.querySelector("main").innerHTML = `<p class="empty">${escapeHtml(ex.message)}</p>`;
     return;
@@ -284,9 +284,24 @@ export async function renderSeriesDetail(root, { id }) {
               <span>대표 표지 URL</span>
               <input name="cover_url" id="edit-cover" type="url" value="${escapeAttr(series.cover_url || "")}" placeholder="https://… (비우면 최신 권 표지)" />
             </label>
+            ${
+              series.is_manual
+                ? `<div class="manual-field-row">
+              <label class="manual-field">
+                <span>출처 문구</span>
+                <input name="source_label" id="edit-source-label" type="text" value="${escapeAttr(series.source_label || "")}" placeholder="비우면 불명 · 예: 작가 서재" />
+              </label>
+              <label class="manual-field">
+                <span>출처 링크</span>
+                <input name="source_url" id="edit-source-url" type="url" value="${escapeAttr(series.source_url || "")}" placeholder="https://…" />
+              </label>
+            </div>
+            <p class="muted">문구·링크 중 하나만 있어도 표시됩니다. 둘 다 비우면 「불명」으로 표시됩니다.</p>`
+                : ""
+            }
             <div class="alias-edit">
               <h3>검색</h3>
-              <p class="muted">줄임말·별칭과 함께 검색됩니다. 예: 전생슬, SAO.</p>
+              <p class="muted">줄임말·별칭과 함께 검색됩니다. 띄어쓰기·특수문자는 무시합니다. 예: 전생슬, SAO.</p>
               ${
                 (series.search_bundle_peers || []).length
                   ? `<p class="muted">함께 검색됨: ${(series.search_bundle_peers || [])
@@ -345,7 +360,7 @@ export async function renderSeriesDetail(root, { id }) {
     root.innerHTML = shell(
       { email: getUser()?.email, active: "series", isAdmin },
       `<main class="page series-detail">
-        <a class="back-link" href="/series" data-link>← 목록</a>
+        <a class="back-link" href="${escapeAttr(seriesListReturnUrl())}" data-link>← 목록</a>
         <section class="detail-hero">
           ${cover(series.latest_cover_url, series.title, "cover cover--lg")}
           <div class="detail-hero__info">
@@ -359,9 +374,26 @@ export async function renderSeriesDetail(root, { id }) {
             return b ? ` ·${b}` : "";
           })()}
             </p>
-            <p class="source-line">
+            ${(() => {
+              if (series.is_manual) {
+                const label = (series.source_label || "").trim();
+                const url = (series.source_url || "").trim();
+                let body;
+                if (label && url) {
+                  body = `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+                } else if (label) {
+                  body = escapeHtml(label);
+                } else if (url) {
+                  body = `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`;
+                } else {
+                  body = "불명";
+                }
+                return `<p class="source-line">출처: ${body}</p>`;
+              }
+              return `<p class="source-line">
               출처: <a href="${aladinSearchUrl(series.title)}" target="_blank" rel="noopener noreferrer">알라딘에서 검색</a>
-            </p>
+            </p>`;
+            })()}
             <dl class="detail-facts">
               <div><dt>첫 출간</dt><dd>${formatDate(series.first_published_at)}</dd></div>
               <div><dt>최신 출간</dt><dd>${formatDate(series.latest_published_at)}</dd></div>
@@ -385,10 +417,14 @@ export async function renderSeriesDetail(root, { id }) {
 
         <section class="volume-section">
           <div class="volume-toolbar">
-            <div class="sort-tabs">
-              <a href="/series/${id}?order=desc" data-link class="sort-tabs__item ${orderParam !== "asc" ? "is-active" : ""}">신간부터</a>
-              <a href="/series/${id}?order=asc" data-link class="sort-tabs__item ${orderParam === "asc" ? "is-active" : ""}">1권부터</a>
-            </div>
+            <button
+              type="button"
+              class="sort-dir"
+              id="volume-order-dir"
+              aria-label="${volumeOrder === "asc" ? "1권부터" : "신간부터"}"
+              title="${volumeOrder === "asc" ? "1권부터 (클릭하여 신간부터)" : "신간부터 (클릭하여 1권부터)"}"
+              data-order="${volumeOrder}"
+            >${sortDirectionIcon(volumeOrder)}</button>
             <div class="volume-toolbar__actions">
               <span class="volume-read-hint" title="PC에서 Shift+클릭으로 구간 선택">Shift+클릭 구간</span>
               <button type="button" class="btn btn--ghost btn--sm" id="select-all">전체 선택</button>
@@ -767,6 +803,8 @@ export async function renderSeriesDetail(root, { id }) {
           author: root.querySelector("#edit-author").value.trim() || null,
           publisher: root.querySelector("#edit-publisher").value.trim() || null,
           cover_url: root.querySelector("#edit-cover").value.trim() || null,
+          source_label: root.querySelector("#edit-source-label")?.value.trim() || null,
+          source_url: root.querySelector("#edit-source-url")?.value.trim() || null,
           volumes,
           force: true,
         });
@@ -830,6 +868,18 @@ export async function renderSeriesDetail(root, { id }) {
       const allOn = values.length > 0 && values.every(Boolean);
       for (const volumeId of readMap.keys()) readMap.set(volumeId, !allOn);
       markDirty(true);
+      paint();
+    });
+
+    root.querySelector("#volume-order-dir")?.addEventListener("click", () => {
+      volumeOrder = volumeOrder === "asc" ? "desc" : "asc";
+      series.volumes.reverse();
+      lastReadClickIndex = null;
+      const sp = new URLSearchParams(location.search);
+      if (volumeOrder === "asc") sp.set("order", "asc");
+      else sp.delete("order");
+      const qs = sp.toString();
+      history.replaceState(null, "", `/series/${id}${qs ? `?${qs}` : ""}`);
       paint();
     });
 
@@ -929,7 +979,7 @@ export async function renderSeriesDetail(root, { id }) {
         await api.deleteManualSeries(id);
         toast("삭제했습니다", "ok");
         window.removeEventListener("beforeunload", unloadHandler);
-        location.href = "/series";
+        location.href = seriesListReturnUrl();
       } catch (ex) {
         toast(ex.message, "error");
       }

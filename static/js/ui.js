@@ -74,11 +74,10 @@ export function shell({ email, active, isAdmin = false }, content) {
           <a href="/series" data-link class="${active === "series" ? "is-active" : ""}">작품</a>
           <a href="/import" data-link class="${active === "import" ? "is-active" : ""}">${isAdmin ? "추가" : "요청"}</a>
           <a href="/tierlist" data-link class="${active === "tierlist" ? "is-active" : ""}">티어리스트</a>
-          <a href="/mypage" data-link class="${active === "mypage" ? "is-active" : ""}">마이페이지</a>
           ${
             isAdmin
               ? `<a href="/admin" data-link class="${active === "admin" ? "is-active" : ""}">관리</a>`
-              : ""
+              : `<a href="/mypage" data-link class="${active === "mypage" ? "is-active" : ""}">마이페이지</a>`
           }
         </nav>
         <div class="topbar__user">
@@ -132,4 +131,58 @@ export function toast(message, type = "info") {
   el.classList.add("is-show");
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove("is-show"), 2600);
+}
+
+const SERIES_LIST_URL_KEY = "linvlib.seriesListUrl";
+
+/** Persist list query so detail "← 목록" can restore search/filters/sort. */
+export function rememberSeriesListUrl(url = `${location.pathname}${location.search}`) {
+  try {
+    const path = url.split("?")[0];
+    if (path === "/series") {
+      sessionStorage.setItem(SERIES_LIST_URL_KEY, url);
+    }
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+export function seriesListReturnUrl() {
+  try {
+    const saved = sessionStorage.getItem(SERIES_LIST_URL_KEY);
+    if (!saved) return "/series";
+    const u = new URL(saved, location.origin);
+    if (u.pathname === "/series") return `${u.pathname}${u.search}`;
+  } catch {
+    /* ignore */
+  }
+  return "/series";
+}
+
+/** Asc/desc control icon used on series list and volume order. */
+export function sortDirectionIcon(order) {
+  const desc = order !== "asc";
+  const bars = desc
+    ? [
+        [3, 14],
+        [8, 10],
+        [13, 7],
+        [18, 4],
+      ]
+    : [
+        [3, 4],
+        [8, 7],
+        [13, 10],
+        [18, 14],
+      ];
+  const arrow = desc
+    ? `<path d="M5 3v14M5 17l-3.2-3.2M5 17l3.2-3.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`
+    : `<path d="M5 17V3M5 3l-3.2 3.2M5 3l3.2 3.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  const barPaths = bars
+    .map(
+      ([y, w]) =>
+        `<rect x="11" y="${y}" width="${w}" height="2.6" rx="1.3" fill="currentColor"/>`
+    )
+    .join("");
+  return `<svg class="sort-dir__icon" viewBox="0 0 24 22" width="22" height="20" aria-hidden="true">${arrow}${barPaths}</svg>`;
 }

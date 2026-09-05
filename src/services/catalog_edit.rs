@@ -30,6 +30,19 @@ pub async fn update_series(
 
     manual::ensure_title_available_pub(&state.pool, title, Some(series_id), body.force).await?;
 
+    let is_manual = manual::is_manual_series_id(&existing.aladin_series_id);
+    let (source_label, source_url) = if is_manual {
+        (
+            body.source_label.as_deref(),
+            body.source_url.as_deref(),
+        )
+    } else {
+        (
+            existing.source_label.as_deref(),
+            existing.source_url.as_deref(),
+        )
+    };
+
     let series = repositories::update_series_meta(
         &state.pool,
         series_id,
@@ -40,6 +53,8 @@ pub async fn update_series(
             .map(str::trim)
             .filter(|s| !s.is_empty()),
         body.cover_url.as_deref(),
+        source_label,
+        source_url,
     )
     .await?;
 

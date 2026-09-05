@@ -18,8 +18,12 @@ const STATUS_LABEL = {
 
 export async function renderMypage(root) {
   const user = getUser();
+  if (user?.is_admin) {
+    navigate("/admin", { replace: true });
+    return;
+  }
   root.innerHTML = shell(
-    { email: user?.email, active: "mypage", isAdmin: !!user?.is_admin },
+    { email: user?.email, active: "mypage", isAdmin: false },
     `<main class="page"><p class="muted">불러오는 중…</p></main>`
   );
   bindLogout();
