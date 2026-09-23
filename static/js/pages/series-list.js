@@ -175,7 +175,7 @@ export async function renderSeriesList(root) {
             getUser()?.is_admin
               ? `<div class="page__head--actions">
             <a class="btn btn--primary btn--sm" href="/import" data-link>작품 추가</a>
-            <button type="button" class="btn btn--ghost btn--sm" id="admin-new-release-refresh" title="알라딘 신간 목록을 백그라운드로 가져와 카탈로그 매칭 작품을 갱신합니다">
+            <button type="button" class="btn btn--ghost btn--sm" id="admin-new-release-refresh" title="예스24 신간 목록을 백그라운드로 가져와 카탈로그 매칭 작품을 갱신합니다">
               신간 갱신
             </button>
           </div>`
@@ -330,7 +330,7 @@ export async function renderSeriesList(root) {
                   : `<a class="btn btn--primary" href="/import" data-link>작품 추가하기</a>`
                 : cur.q
                   ? isAdmin
-                    ? `<a class="btn btn--primary" href="/import?q=${qEnc}" data-link>알라딘에서 추가</a>
+                    ? `<a class="btn btn--primary" href="/import?q=${qEnc}" data-link>카탈로그에서 추가</a>
                        <a class="btn btn--ghost" href="/import?tab=manual&title=${qEnc}" data-link>직접 등록</a>`
                     : `<a class="btn btn--primary" href="/import?tab=add&q=${qEnc}" data-link>작품 추가 요청</a>
                        <a class="btn btn--ghost" href="/import?tab=search_improve&q=${qEnc}" data-link>검색 개선 요청</a>`
@@ -372,7 +372,7 @@ export async function renderSeriesList(root) {
             ? `<div class="search-improve-hint">
             <p>목록에 없다면 추가하거나, 줄임말이면 별칭을 붙일 수 있습니다.</p>
             <div class="empty-state__actions">
-              <a class="btn btn--primary btn--sm" href="/import?q=${qEnc}" data-link>알라딘에서 추가</a>
+              <a class="btn btn--primary btn--sm" href="/import?q=${qEnc}" data-link>카탈로그에서 추가</a>
               <a class="btn btn--ghost btn--sm" href="/import?tab=manual&title=${qEnc}" data-link>직접 등록</a>
               <a class="btn btn--ghost btn--sm" href="/import?tab=aliases&q=${qEnc}" data-link>검색</a>
             </div>
@@ -450,7 +450,7 @@ export async function renderSeriesList(root) {
   root.querySelector("#admin-new-release-refresh")?.addEventListener("click", async () => {
     if (
       !confirm(
-        "알라딘 신간 목록을 가져와 카탈로그에 있는 작품만 갱신할까요?\n목록에 없는 신간은 관리 → 추천에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)"
+        "예스24 신간 목록을 가져와 카탈로그에 있는 작품만 갱신할까요?\n목록에 없는 신간은 관리 → 추천에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)"
       )
     ) {
       return;

@@ -7,8 +7,9 @@ use sqlx::SqlitePool;
 use crate::config::Config;
 use crate::services::rate_limit::AuthRateLimiter;
 use crate::services::title_rules::TitleRules;
+use crate::services::yes24_limit::Yes24Limiter;
 
-/// Prevents overlapping Aladin new-release refresh jobs (manual + scheduled).
+/// Prevents overlapping new-release refresh jobs (manual + scheduled).
 #[derive(Default)]
 pub struct RefreshGate {
     running: AtomicBool,
@@ -37,6 +38,7 @@ pub struct AppState {
     pub http: Client,
     pub title_rules: Arc<TitleRules>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
+    pub yes24_limiter: Arc<Yes24Limiter>,
     pub refresh_gate: Arc<RefreshGate>,
 }
 
@@ -49,6 +51,7 @@ impl AppState {
             http: Client::new(),
             title_rules: Arc::new(title_rules),
             auth_rate_limiter: Arc::new(AuthRateLimiter::default()),
+            yes24_limiter: Arc::new(Yes24Limiter::default()),
             refresh_gate: Arc::new(RefreshGate::default()),
         }
     }

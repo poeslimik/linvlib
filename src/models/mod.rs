@@ -518,14 +518,17 @@ pub struct ImportSearchResult {
     pub volume_count: usize,
     pub already_imported: bool,
     pub series_id: Option<Uuid>,
+    /// Catalog source labels (currently always `yes24`).
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ImportRequest {
     pub aladin_series_id: Option<String>,
-    /// Single Aladin ItemId (or product URL). Prefer `seed_item_ids` for multiple.
+    /// Ignored. Import uses `aladin_series_id` (series key) and `title`.
     pub seed_item_id: Option<String>,
-    /// Explicit ItemIds / product URLs to LookUp (fills gaps ItemSearch misses).
+    /// Ignored. Import uses `aladin_series_id` (series key) and `title`.
     #[serde(default)]
     pub seed_item_ids: Vec<String>,
     pub title: Option<String>,
@@ -609,7 +612,7 @@ pub struct SplitVolumesRequest {
 
 #[derive(Debug, Serialize)]
 pub struct NewReleaseRefreshResult {
-    /// New-release items fetched from Aladin ItemList.
+    /// Volumes returned by the Yes24 new-release window.
     pub scanned_items: i64,
     /// Unique catalog series matched from those items.
     pub matched_series: i64,
@@ -693,13 +696,7 @@ pub struct CatalogRequestRelatedSeries {
 
 #[derive(Debug, Serialize)]
 pub struct AdminStatusResponse {
-    pub quota_date: String,
-    pub quota_used: i64,
-    pub quota_soft: i64,
-    pub quota_hard: i64,
-    pub quota_remaining: i64,
     pub server_time_kst: String,
-    pub recent_quota: Vec<AdminQuotaDay>,
     pub last_refresh_at: Option<String>,
     pub last_refresh_note: Option<String>,
     /// True while a manual/scheduled new-release refresh is in progress.
@@ -712,12 +709,14 @@ pub struct AdminStatusResponse {
     pub pending_suggestions: i64,
     pub user_count: i64,
     pub manual_series_count: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AdminQuotaDay {
-    pub date: String,
-    pub used: i64,
+    /// Yes24 Open API calls used today (KST).
+    pub yes24_quota_used: i64,
+    /// Soft daily cap we enforce in-app.
+    pub yes24_quota_soft_limit: i64,
+    /// Provider hard daily cap (Basic).
+    pub yes24_quota_hard_limit: i64,
+    /// KST calendar date for the quota counters (YYYY-MM-DD).
+    pub yes24_quota_date: String,
 }
 
 #[derive(Debug, Serialize)]

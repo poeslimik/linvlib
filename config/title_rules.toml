@@ -184,7 +184,7 @@ replace = " "
 pattern = '사족\s+편'
 replace = "사족편"
 [[arcs.search_rewrites]]
-# 검색어에 사족편이 붙어 있을 때 알라딘 표기/짧은 표기 보조
+# 검색어가 "사족편"이면 띄어쓴 표기("사족 편")로도 찾는다
 when_contains = "사족편"
 unless_contains = "사족 편"
 replace_from = "사족편"

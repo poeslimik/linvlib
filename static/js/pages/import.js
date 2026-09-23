@@ -2,6 +2,12 @@ import { api } from "../api.js";
 import { getUser } from "../auth.js";
 import { shell, cover, escapeHtml, escapeAttr, toast, bindLogout } from "../ui.js";
 
+function catalogSources(r) {
+  const labels = { yes24: "예스24" };
+  const src = Array.isArray(r.sources) && r.sources.length ? r.sources : ["yes24"];
+  return src.map((s) => labels[s] || s).join(" · ");
+}
+
 function volumeRowHtml(vol = {}, idx = 0) {
   return `
     <div class="manual-vol-row" data-idx="${idx}">
@@ -20,7 +26,7 @@ export async function renderImport(root) {
   const q = params.get("q") || "";
   const rawTab = params.get("tab") || "";
   const tab =
-    rawTab === "manual" ? "manual" : rawTab === "aliases" ? "aliases" : "aladin";
+    rawTab === "manual" ? "manual" : rawTab === "aliases" ? "aliases" : "import";
   const preTitle = params.get("title") || (tab === "manual" ? q : "") || "";
   const preAuthor = params.get("author") || "";
   const prePublisher = params.get("publisher") || "";
@@ -71,7 +77,7 @@ export async function renderImport(root) {
               <button type="submit" class="btn btn--primary">추가 요청 보내기</button>
             </form>
           </section>
-          <p class="muted" style="margin-top:1rem">도서 정보 출처: <a href="https://www.aladin.co.kr/" target="_blank" rel="noopener noreferrer">알라딘 인터넷서점</a></p>
+          <p class="muted" style="margin-top:1rem">도서 정보 출처: <a href="https://www.yes24.com/" target="_blank" rel="noopener noreferrer">예스24</a></p>
         </section>
 
         <section id="tab-search-improve" class="import-panel ${userTab === "search_improve" ? "" : "is-hidden"}">
@@ -125,7 +131,7 @@ export async function renderImport(root) {
     );
     bindLogout();
     wireUserRequest();
-    if (userTab === "add" && q) loadAladinUser();
+    if (userTab === "add" && q) loadCatalogUser();
     return;
   }
 
@@ -134,28 +140,19 @@ export async function renderImport(root) {
     `<main class="page">
       <div class="page__head">
         <h1>작품 · 별칭</h1>
-        <p class="page__lead">알라딘 가져오기, 직접 등록, 검색 줄임말·묶음을 한곳에서 관리합니다.</p>
+        <p class="page__lead">카탈로그 가져오기, 직접 등록, 검색 줄임말·묶음을 한곳에서 관리합니다.</p>
         <div class="import-tabs" role="tablist">
-          <button type="button" class="import-tabs__item ${tab === "aladin" ? "is-active" : ""}" data-tab="aladin">알라딘</button>
+          <button type="button" class="import-tabs__item ${tab === "import" ? "is-active" : ""}" data-tab="import">가져오기</button>
           <button type="button" class="import-tabs__item ${tab === "manual" ? "is-active" : ""}" data-tab="manual">직접 등록</button>
           <button type="button" class="import-tabs__item ${tab === "aliases" ? "is-active" : ""}" data-tab="aliases">검색</button>
         </div>
       </div>
-      <section id="tab-aladin" class="import-panel ${tab === "aladin" ? "" : "is-hidden"}">
+      <section id="tab-import" class="import-panel ${tab === "import" ? "" : "is-hidden"}">
         <form class="search-form" id="import-form">
-          <input name="q" type="search" placeholder="추가할 작품 제목" value="${escapeHtml(tab === "aladin" ? q : "")}" ${tab === "aladin" ? "autofocus" : ""} />
+          <input name="q" type="search" placeholder="추가할 작품 제목" value="${escapeHtml(tab === "import" ? q : "")}" ${tab === "import" ? "autofocus" : ""} />
           <button type="submit" class="btn btn--primary">검색</button>
         </form>
         <div id="import-results"></div>
-        <section class="panel" style="margin-top:1.5rem">
-          <h2>ItemId로 가져오기</h2>
-          <p class="muted">알라딘 상품 URL 또는 ItemId를 여러 줄·쉼표로 붙여 넣으면 LookUp으로 권을 채웁니다. 검색이 빠뜨리는 전자책 시리즈에 사용하세요.</p>
-          <label class="manual-field">
-            <span>ItemId / URL</span>
-            <textarea id="seed-item-ids" rows="6" placeholder="https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=156790758&#10;164448182&#10;171163543"></textarea>
-          </label>
-          <button type="button" class="btn btn--primary" id="import-by-items">ItemId로 가져오기</button>
-        </section>
       </section>
       <section id="tab-manual" class="import-panel ${tab === "manual" ? "" : "is-hidden"}">
         <form id="manual-form" class="manual-form">
@@ -240,7 +237,7 @@ export async function renderImport(root) {
           </form>
         </section>
       </section>
-      <p class="muted">도서 정보 출처: <a href="https://www.aladin.co.kr/" target="_blank" rel="noopener noreferrer">알라딘 인터넷서점</a></p>
+      <p class="muted">도서 정보 출처: <a href="https://www.yes24.com/" target="_blank" rel="noopener noreferrer">예스24</a></p>
     </main>`
   );
   bindLogout();
@@ -337,7 +334,7 @@ export async function renderImport(root) {
       e.preventDefault();
       const next = String(new FormData(e.target).get("q") || "");
       history.pushState(null, "", `/import?q=${encodeURIComponent(next)}`);
-      loadAladinUser();
+      loadCatalogUser();
     });
     root.querySelector("#request-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -415,7 +412,7 @@ export async function renderImport(root) {
     renderSelected();
   }
 
-  async function loadAladinUser() {
+  async function loadCatalogUser() {
     const box = root.querySelector("#import-results");
     const query = new URLSearchParams(location.search).get("q") || "";
     if (!query.trim()) {
@@ -436,7 +433,7 @@ export async function renderImport(root) {
           ${cover(r.cover_url, r.title, "cover cover--md")}
           <div class="import-card__body">
             <h3>${escapeHtml(r.title)}</h3>
-            <p class="muted">${escapeHtml(r.author || "작가 미상")}${r.publisher ? ` · ${escapeHtml(r.publisher)}` : ""} · ${r.volume_count}권</p>
+            <p class="muted">${escapeHtml(r.author || "작가 미상")}${r.publisher ? ` · ${escapeHtml(r.publisher)}` : ""} · ${r.volume_count}권 · ${escapeHtml(catalogSources(r))}</p>
             <div class="import-card__actions">
               ${
                 r.already_imported
@@ -480,7 +477,7 @@ export async function renderImport(root) {
       root.querySelectorAll("[data-tab]").forEach((b) =>
         b.classList.toggle("is-active", b.dataset.tab === next)
       );
-      root.querySelector("#tab-aladin")?.classList.toggle("is-hidden", next !== "aladin");
+      root.querySelector("#tab-import")?.classList.toggle("is-hidden", next !== "import");
       root.querySelector("#tab-manual")?.classList.toggle("is-hidden", next !== "manual");
       root.querySelector("#tab-aliases")?.classList.toggle("is-hidden", next !== "aliases");
     }
@@ -569,31 +566,7 @@ export async function renderImport(root) {
       sp.set("q", next);
       sp.delete("tab");
       history.pushState(null, "", `/import?${sp}`);
-      loadAladinAdmin();
-    });
-
-    root.querySelector("#import-by-items")?.addEventListener("click", async () => {
-      const raw = root.querySelector("#seed-item-ids")?.value || "";
-      const seeds = raw
-        .split(/[\s,;]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (!seeds.length) {
-        toast("ItemId 또는 상품 URL을 입력하세요", "error");
-        return;
-      }
-      const btn = root.querySelector("#import-by-items");
-      btn.disabled = true;
-      btn.textContent = "가져오는 중…";
-      try {
-        const res = await api.importSeries({ seed_item_ids: seeds });
-        toast(`가져왔습니다 (${res.volume_count}권)`, "ok");
-        location.href = `/series/${res.series_id}`;
-      } catch (ex) {
-        toast(ex.message, "error");
-        btn.disabled = false;
-        btn.textContent = "ItemId로 가져오기";
-      }
+      loadCatalogAdmin();
     });
 
     root.querySelector("#aa-series-search")?.addEventListener("click", () => searchAliasSeries());
@@ -720,7 +693,7 @@ export async function renderImport(root) {
 
     const volsBox = root.querySelector("#manual-vols");
     if (!volsBox) {
-      if (tab === "aladin" && q) loadAladinAdmin();
+      if (tab === "import" && q) loadCatalogAdmin();
       return;
     }
     function revealTitleEnd(input) {
@@ -796,10 +769,10 @@ export async function renderImport(root) {
       }
     });
 
-    if (tab === "aladin" && q) loadAladinAdmin();
+    if (tab === "import" && q) loadCatalogAdmin();
   }
 
-  async function loadAladinAdmin() {
+  async function loadCatalogAdmin() {
     const box = root.querySelector("#import-results");
     const query = new URLSearchParams(location.search).get("q") || "";
     if (!query.trim()) {
@@ -820,7 +793,7 @@ export async function renderImport(root) {
           ${cover(r.cover_url, r.title, "cover cover--md")}
           <div class="import-card__body">
             <h3>${escapeHtml(r.title)}</h3>
-            <p class="muted">${escapeHtml(r.author || "작가 미상")} · ${r.volume_count}권</p>
+            <p class="muted">${escapeHtml(r.author || "작가 미상")} · ${r.volume_count}권 · ${escapeHtml(catalogSources(r))}</p>
             <div class="import-card__actions">
               ${
                 r.already_imported
@@ -842,7 +815,7 @@ export async function renderImport(root) {
               title: btn.dataset.title,
             });
             toast(`가져왔습니다 (${res.volume_count}권)`, "ok");
-            loadAladinAdmin();
+            loadCatalogAdmin();
           } catch (ex) {
             toast(ex.message, "error");
             btn.disabled = false;

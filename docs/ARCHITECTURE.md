@@ -1,16 +1,17 @@
 # linvlib 아키텍처
 
-이 문서는 **처음 코드를 연 사람**이 “어디를 보면 되는지” 빠르게 잡도록 작성했습니다.
+이 문서는 **처음 코드를 연 사람**이 “어디를 보면 되는지” 빠르게 잡도록 작성했습니다.  
+도서 API·신간 파이프는 **[CATALOG.md](CATALOG.md)** 를 보세요.
 
 ## 한 줄 요약
 
-브라우저 SPA(`static/`) → Axum HTTP API(`src/`) → SQLite(`linvlib.db`) + 알라딘 Open API.
+브라우저 SPA(`static/`) → Axum HTTP API(`src/`) → SQLite(`linvlib.db`) + 도서 공급자(예스24 Open API).
 
 ```mermaid
 flowchart LR
   Browser["Browser SPA\nstatic/"] -->|JSON + JWT| API["Axum API\nsrc/"]
   API --> DB[(SQLite)]
-  API --> Aladin["Aladin Open API"]
+  API --> Catalog["catalog\nYes24"]
   Schedulers["Background jobs\nrefresh / backup / Discord / unverified cleanup"] --> API
 ```
 
@@ -24,7 +25,7 @@ flowchart LR
 6. 백그라운드 작업 시작  
    - 신간 목록 갱신 (`services/scheduler` → `services/new_releases`)  
    - DB 백업 (`services/backup`)  
-   - Discord 상태 (`services/status_report`)  
+   - Discord 상태 (`services/status_report`, 스케줄 신간 갱신 직후)  
    - 미인증 계정 정리 (`services/email` — 인증 토큰 만료 후 삭제, 기동 직후 + 매시간)  
 7. `routes::create_router` 로 HTTP 서버 listen  
 
@@ -34,7 +35,7 @@ flowchart LR
 |--------|------|------|
 | Routes | `src/routes/` | URL ↔ 핸들러 연결 |
 | Handlers | `src/handlers/` | HTTP 입출력, 인증 extractor |
-| Services | `src/services/` | 도메인 로직 (알라딘, 요청 승인, 신간 …) |
+| Services | `src/services/` | 도메인 로직 (catalog, 신간, 요청 …) |
 | Repositories | `src/repositories/` | SQL |
 | Models | `src/models/` | serde DTO |
 | Auth | `src/auth/` | JWT, `AuthUser` / `AdminUser` |
@@ -70,28 +71,33 @@ erDiagram
 - `catalog_requests` — 사용자 요청 (add / edit / other / search_improve)  
 - `new_release_suggestions` — 신간 목록에는 있는데 카탈로그에 없는 후보  
 
+컬럼 `aladin_series_id` / `aladin_item_id` 는 이름을 그대로 둔 외부 식별자입니다. 시리즈 키는 `title:…` 또는 `manual:…`, 권 키는 `isbn:…` / `yes24:…` / `manual-vol:…` 일 수 있습니다.
+
 ## 신간 갱신
 
-전량 시리즈 검색 방식은 **폐기**되었습니다. 현재는 신간 목록만 봅니다.
+전량 시리즈 검색 방식은 **폐기**되었습니다. 현재는 예스24 신간·임프린트 최근 출간만 봅니다.
 
 ```mermaid
 flowchart TD
-  A["ItemList ItemNewAll\nBook LN + eBook"] --> B["LN 후보 필터"]
-  B --> C{"카탈로그에 있나?\nseriesId 또는 기존 itemId"}
-  C -->|예| D["import_series\n해당 작품만 갱신"]
+  A["Yes24 newproduct + imprint RECENT"] --> B["CatalogVolume 후보"]
+  B --> C{"카탈로그에 있나?\nISBN 또는 제목"}
+  C -->|예| D["catalog::import_series\n해당 작품만 갱신"]
   C -->|아니오| E["new_release_suggestions\n관리 추천 탭"]
 ```
 
 코드:
 
-- 목록 수집: `services/aladin.rs` → `fetch_new_release_items`  
+- 목록 수집: `services/catalog/yes24.rs` → `fetch_new_release_items`  
 - 매칭·갱신·추천: `services/new_releases.rs`  
 - 수동 실행: `POST /api/v1/admin/refresh` → **즉시** `{ started, already_running, message }` 반환 후 백그라운드 실행 (nginx 타임아웃 회피). 진행 여부는 `GET /admin/status`의 `refresh_running`  
-- 스케줄: `services/scheduler.rs` (23:30 KST)  
+- 스케줄: `services/scheduler.rs` (23:30 KST). 이 실행이 끝나면 Discord 일일 상태를 보냅니다. 관리자 수동 갱신은 보내지 않습니다.  
 
-추천 UI: 관리 → **추천** → 가져오기 / 숨기기.
+추천 UI: 관리 → **추천** → 가져오기 / 숨기기.  
+상세: [CATALOG.md](CATALOG.md#신간-갱신).
 
 ## 검색이 동작하는 방식
+
+앱 **내부** 작품 검색:
 
 1. 제목 `LIKE`  
 2. `series_search_aliases` (별칭; 제목·별칭 모두 공백·특수문자 무시)  
@@ -99,27 +105,31 @@ flowchart TD
 
 관리자 일괄 도구: `/import?tab=aliases` (줄임말 + 묶음).
 
+외부 **가져오기** 검색은 [CATALOG.md](CATALOG.md#가져오기-검색) 참고.
+
 ## 카탈로그 요청 흐름
 
 1. 사용자: `/import` 또는 작품 상세에서 요청  
 2. DB `catalog_requests` (`pending`)  
 3. 관리자: 관리 → **요청**  
    - **승인** = 상태만 변경 (추가 요청은 자동 등록하지 **않음**)  
-   - 알라딘 ID 있으면 **가져오기 후 승인**으로 실제 import  
+   - 외부 시리즈 키가 있으면 **가져오기 후 승인**으로 실제 import  
    - 검색 개선 승인 시에만 별칭 반영  
 4. 처리된 건은 **요청 기록**에 남음  
 
-## 알라딘 연동 모듈
+## 도서 공급자 모듈
 
 | 함수/모듈 | 용도 |
 |-----------|------|
-| `import_search` | 제목으로 시리즈 후보 검색 (쿼터 소모) |
-| `import_series` | 시리즈 단위로 권 upsert (`seed_item_ids`로 ItemLookUp 보강 가능) |
-| `fetch_new_release_items` | 신간 리스트 |
+| `catalog::import_search` | 예스24 검색 (LN 필터) |
+| `catalog::import_series` | 예스24 import |
+| `yes24::fetch_new_release_items` | 신간 리스트 |
+| `group::is_catalog_candidate` | LN 후보 판별 |
 | `new_releases::refresh` | 신간 기반 카탈로그 갱신 |
 | `title_rules` + `config/title_rules.toml` | 제목 정규화·합본 제외 등 |
 
-쿼터: `services/quota.rs` — KST 날짜, soft/hard 한도.
+KST 날짜 헬퍼: `services/quota.rs` (`seoul_today` 등).  
+공급자 상세: [CATALOG.md](CATALOG.md).
 
 ## 마이그레이션
 
@@ -142,7 +152,7 @@ flowchart TD
 |-----|------|-----------------|
 | 신간 갱신 | `scheduler` + `new_releases` | 23:30 |
 | DB 백업 | `backup` | 00:00 |
-| Discord 상태 | `status_report` | 08:00 |
+| Discord 상태 | `status_report` | 신간 갱신 직후 |
 | 미인증 계정 정리 | `email` | 기동 직후 + 매시간 |
 
 마지막 실행 일자는 `app_meta` 테이블에 저장되어, 낮에 재시작해도 같은 날 중복 실행을 피합니다.  
@@ -159,6 +169,7 @@ cargo test
 ## 관련 문서
 
 - [README.md](../README.md) — 온보딩·환경변수  
+- [CATALOG.md](CATALOG.md) — 도서 공급자
 - [EMAIL.md](EMAIL.md) — 인증·재설정 메일 템플릿  
 - [TUTORIAL.md](TUTORIAL.md) — 첫 로그인 튜토리얼  
 - [deploy.md](deploy.md) — 서버 배포  

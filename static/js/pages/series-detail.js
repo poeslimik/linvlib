@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { getUser } from "../auth.js";
 import { onBeforeLeave } from "../router.js";
-import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, aladinSearchUrl, publishStatusBadge, publishStatusLabel, sortDirectionIcon, seriesListReturnUrl } from "../ui.js";
+import { shell, cover, escapeHtml, escapeAttr, formatDate, toast, bindLogout, catalogSearchUrl, publishStatusBadge, publishStatusLabel, sortDirectionIcon, seriesListReturnUrl } from "../ui.js";
 
 const RATINGS = ["None", "S", "A", "B", "C", "D", "F"];
 
@@ -250,7 +250,7 @@ export async function renderSeriesDetail(root, { id }) {
          ${
            series.is_manual
              ? ""
-             : `<button type="button" class="btn btn--ghost btn--sm" id="refresh-volumes" title="이 작품만 알라딘에서 다시 가져와 새 권을 추가합니다">권 목록 갱신</button>`
+             : `<button type="button" class="btn btn--ghost btn--sm" id="refresh-volumes" title="이 작품만 카탈로그에서 다시 가져와 새 권을 추가합니다">권 목록 갱신</button>`
          }
          <button type="button" class="btn btn--danger btn--sm" id="delete-series">삭제</button>
          ${completeToggle}`
@@ -263,7 +263,7 @@ export async function renderSeriesDetail(root, { id }) {
           ${
             series.is_manual
               ? ""
-              : `<p class="muted">알라딘 갱신은 새 권만 추가하고, 같은 권의 다른 에디션(전자책 등) 중복은 합칩니다. 순서·제목은 여기서 직접 관리하세요.</p>`
+              : `<p class="muted">카탈로그 갱신은 새 권만 추가하고, 같은 권의 다른 에디션 중복은 합칩니다. 순서·제목은 여기서 직접 관리하세요.</p>`
           }
           <form id="manual-edit-form" class="manual-form">
             <label class="manual-field">
@@ -391,7 +391,7 @@ export async function renderSeriesDetail(root, { id }) {
                 return `<p class="source-line">출처: ${body}</p>`;
               }
               return `<p class="source-line">
-              출처: <a href="${aladinSearchUrl(series.title)}" target="_blank" rel="noopener noreferrer">알라딘에서 검색</a>
+              출처: <a href="${catalogSearchUrl(series.title)}" target="_blank" rel="noopener noreferrer">예스24에서 검색</a>
             </p>`;
             })()}
             <dl class="detail-facts">

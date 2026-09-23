@@ -59,8 +59,8 @@ export function publishStatusBadge(status) {
   return ` <span class="badge-publish badge-publish--${kind}">${escapeHtml(label)}</span>`;
 }
 
-export function aladinSearchUrl(title) {
-  return `https://www.aladin.co.kr/search/wsearchresult.aspx?SearchTarget=Book&SearchWord=${encodeURIComponent(title || "")}`;
+export function catalogSearchUrl(title) {
+  return `https://www.yes24.com/Product/Search?domain=ALL&query=${encodeURIComponent(title || "")}`;
 }
 
 export function shell({ email, active, isAdmin = false }, content) {
@@ -88,7 +88,7 @@ export function shell({ email, active, isAdmin = false }, content) {
       </header>
       ${content}
       <footer class="site-footer">
-        <p>도서 정보는 <a href="https://www.aladin.co.kr/" target="_blank" rel="noopener noreferrer">알라딘 인터넷서점</a> Open API를 통해 제공됩니다.</p>
+        <p>도서 정보는 <a href="https://developers.yes24.com/" target="_blank" rel="noopener noreferrer">예스24 Open API</a>를 통해 제공됩니다.</p>
         <p class="site-footer__links">
           <a href="/terms" data-link>이용약관</a>
           <a href="/privacy" data-link>개인정보처리방침</a>

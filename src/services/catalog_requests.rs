@@ -78,10 +78,11 @@ pub async fn create_request(
 
     if request_type == "add" {
         let title = body.title.as_deref().map(str::trim).unwrap_or("");
-        let aladin = body.aladin_series_id.as_deref().map(str::trim).unwrap_or("");
-        if title.is_empty() && aladin.is_empty() {
+        // JSON field `aladin_series_id` is the external series key (`title:…`, etc.).
+        let series_key = body.aladin_series_id.as_deref().map(str::trim).unwrap_or("");
+        if title.is_empty() && series_key.is_empty() {
             return Err(AppError::BadRequest(
-                "title or aladin_series_id is required for add requests".into(),
+                "title or series key is required for add requests".into(),
             ));
         }
     }

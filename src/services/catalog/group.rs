@@ -1,13 +1,16 @@
+//! Shared catalog volume grouping and title helpers.
+//!
+//! [`yes24`](super::yes24) maps API hits into [`CatalogVolume`]; these helpers
+//! group series, filter LN candidates, and reconcile volume numbers.
+
 use std::collections::{HashMap, HashSet};
 
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::NaiveDate;
 use regex::Regex;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    error::{AppError, AppResult},
-    models::{ImportResponse, ImportSearchResult},
+    error::AppResult,
     repositories,
     services::title_rules::{default_rules, TitleRules},
     state::AppState,
@@ -21,14 +24,8 @@ fn rules_of(state: &AppState) -> &TitleRules {
     state.title_rules.as_ref()
 }
 
-const ALADIN_SEARCH_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemSearch.aspx";
-const ALADIN_LOOKUP_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemLookUp.aspx";
-const ALADIN_LIST_URL: &str = "https://www.aladin.co.kr/ttb/api/ItemList.aspx";
-/// 국내도서 > 만화/라이트노벨 > 라이트 노벨
-const LIGHT_NOVEL_CATEGORY_ID: &str = "50927";
-
-/// 전자책·종이책에 쓰이는 국내 LN 계열 브랜드(코믹 레이블 제외).
-const LN_IMPRINTS: &[&str] = &[
+/// Domestic LN imprint brands (comics labels excluded).
+pub(crate) const LN_IMPRINTS: &[&str] = &[
     "시프트노벨",
     "노블엔진",
     "L노벨",
@@ -45,66 +42,22 @@ const LN_IMPRINTS: &[&str] = &[
     "서울미디어코믹스",
 ];
 
-#[derive(Debug, Deserialize)]
-struct AladinSearchResponse {
-    #[serde(default, rename = "errorCode")]
-    error_code: Option<i64>,
-    #[serde(default, rename = "errorMessage")]
-    error_message: Option<String>,
-    #[serde(default)]
-    item: AladinItems,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum AladinItems {
-    None,
-    One(AladinItem),
-    Many(Vec<AladinItem>),
-}
-
-impl Default for AladinItems {
-    fn default() -> Self {
-        AladinItems::None
-    }
-}
-
-impl AladinItems {
-    fn into_vec(self) -> Vec<AladinItem> {
-        match self {
-            AladinItems::None => vec![],
-            AladinItems::One(item) => vec![item],
-            AladinItems::Many(items) => items,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AladinItem {
+#[derive(Debug, Clone)]
+pub struct CatalogVolume {
     pub title: String,
-    #[serde(default)]
     pub author: String,
-    #[serde(default)]
     pub publisher: String,
-    #[serde(default)]
     pub pub_date: String,
-    #[serde(default)]
     pub isbn13: String,
+    /// Synthetic numeric id for sorting/dedupe within a session.
     pub item_id: i64,
-    #[serde(default)]
     pub cover: String,
-    #[serde(default)]
-    pub category_id: Option<i64>,
-    #[serde(default)]
     pub category_name: Option<String>,
-    #[serde(default)]
-    pub series_info: Option<AladinSeriesInfo>,
-    #[serde(default)]
-    pub sub_info: Option<AladinSubInfo>,
+    /// Identity stored on `volumes.aladin_item_id` (`isbn:…` / `yes24:…`).
+    pub stored_item_id: Option<String>,
 }
 
-impl AladinItem {
+impl CatalogVolume {
     fn is_light_novel(&self) -> bool {
         self.category_name
             .as_deref()
@@ -112,48 +65,34 @@ impl AladinItem {
             .unwrap_or(false)
     }
 
-    /// 종이책 LN이거나, 허용 LN 브랜드 전자책/도서인지.
+    fn looks_like_comic(&self) -> bool {
+        let cat = self.category_name.as_deref().unwrap_or("");
+        let title = self.title.as_str();
+        cat.contains("만화")
+            || cat.contains("코믹")
+            || title.contains("[만화]")
+            || title.contains("[코믹]")
+            || title.contains("(만화)")
+            || title.contains("(코믹)")
+    }
+
+    /// True for LN candidates: LN imprint or a light-novel/genre label.
     pub(crate) fn is_catalog_candidate(&self) -> bool {
-        if self.is_light_novel() || self.category_id.is_none() {
+        if self.looks_like_comic() {
+            return false;
+        }
+        if self.is_light_novel() {
+            return true;
+        }
+        if LN_IMPRINTS
+            .iter()
+            .any(|imprint| self.publisher.contains(imprint))
+        {
             return true;
         }
         let cat = self.category_name.as_deref().unwrap_or("");
-        // 만화/코믹 원작화는 제외 (요청 범위)
-        if cat.contains("만화") || cat.contains("코믹") {
-            return false;
-        }
-        if LN_IMPRINTS.iter().any(|imprint| self.publisher.contains(imprint)) {
-            return true;
-        }
-        // 전자책 쪽 “라이트노벨/장르소설” 트리
         cat.contains("라이트") || cat.contains("장르소설")
     }
-
-    pub(crate) fn series_id(&self) -> Option<i64> {
-        self.series_info
-            .as_ref()
-            .or_else(|| {
-                self.sub_info
-                    .as_ref()
-                    .and_then(|s| s.series_info.as_ref())
-            })
-            .map(|s| s.series_id)
-            .filter(|&id| id > 0)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AladinSubInfo {
-    #[serde(default)]
-    pub series_info: Option<AladinSeriesInfo>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AladinSeriesInfo {
-    pub series_id: i64,
-    pub series_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -163,303 +102,14 @@ pub struct GroupedSeries {
     pub author: Option<String>,
     pub publisher: Option<String>,
     pub cover_url: Option<String>,
-    pub items: Vec<AladinItem>,
+    pub items: Vec<CatalogVolume>,
 }
 
-async fn parse_aladin_response(
-    response: reqwest::Response,
-) -> AppResult<AladinSearchResponse> {
-    let response = response.error_for_status()?;
-    let text = response.text().await?;
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('<') {
-        return Err(AppError::Internal(
-            "Aladin API returned an HTML error page".into(),
-        ));
-    }
-    let parsed: AladinSearchResponse = serde_json::from_str(&text).map_err(|err| {
-        AppError::Internal(format!("Aladin API returned invalid JSON: {err}"))
-    })?;
-    if let Some(code) = parsed.error_code {
-        let message = parsed
-            .error_message
-            .clone()
-            .unwrap_or_else(|| format!("aladin error code {code}"));
-        return Err(AppError::Internal(format!("Aladin API: {message}")));
-    }
-    Ok(parsed)
-}
-
-pub async fn search_items(state: &AppState, query: &str) -> AppResult<Vec<AladinItem>> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let mut all_items = Vec::new();
-
-    // 1) 국내 종이책 · 라이트노벨 카테고리
-    all_items.extend(
-        search_items_raw(state, query, "Book", Some(LIGHT_NOVEL_CATEGORY_ID), "Title").await?,
-    );
-
-    // 2) 전자책 (카테고리 미지정 → 후보 필터로 LN 계열만 남김)
-    all_items.extend(search_items_raw(state, query, "eBook", None, "Title").await?);
-
-    // 긴 제목·쉼표 제목은 Title 검색이 약해서 Keyword + 축약 쿼리 보강
-    for (q, qtype) in expanded_search_queries(query) {
-        if q == query && qtype == "Title" {
-            continue;
-        }
-        all_items.extend(search_items_raw(state, &q, "Book", Some(LIGHT_NOVEL_CATEGORY_ID), qtype).await?);
-        all_items.extend(search_items_raw(state, &q, "eBook", None, qtype).await?);
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    all_items.retain(|item| seen.insert(item.item_id));
-
-    Ok(all_items
-        .into_iter()
-        .filter(|item| item.is_catalog_candidate())
-        .collect())
-}
-
-/// 알라딘 ItemSearch는 오래된 전자책을 누락하는 경우가 있다.
-/// seriesInfo.seriesId가 있으면 시리즈 상품 페이지에서 ItemId를 모아 LookUp으로 보강한다.
-async fn expand_aladin_series_siblings(
-    state: &AppState,
-    mut items: Vec<AladinItem>,
-    only_sparse: bool,
-) -> AppResult<Vec<AladinItem>> {
-    let mut seen_items: HashSet<i64> = items.iter().map(|i| i.item_id).collect();
-    let mut counts: HashMap<i64, usize> = HashMap::new();
-    let mut series_ids: Vec<i64> = Vec::new();
-
-    for item in &items {
-        if let Some(sid) = item.series_id() {
-            let entry = counts.entry(sid).or_insert(0);
-            *entry += 1;
-            if *entry == 1 {
-                series_ids.push(sid);
-            }
-        }
-    }
-
-    // 검색 결과에 seriesInfo가 비어 있으면 대표 권을 LookUp해 seriesId를 채운다.
-    if series_ids.is_empty() {
-        let seed_ids: Vec<i64> = items
-            .iter()
-            .filter(|i| !rules_of(state).is_bundle_or_set(&i.title))
-            .map(|i| i.item_id)
-            .take(3)
-            .collect();
-        for item_id in seed_ids {
-            if let Ok(full) = lookup_item(state, &item_id.to_string()).await {
-                if let Some(sid) = full.series_id() {
-                    if let Some(slot) = items.iter_mut().find(|i| i.item_id == item_id) {
-                        slot.series_info = full.series_info.clone();
-                    }
-                    series_ids.push(sid);
-                    counts.insert(sid, 1);
-                    break;
-                }
-            }
-        }
-    }
-
-    for sid in series_ids {
-        if only_sparse && counts.get(&sid).copied().unwrap_or(0) >= 4 {
-            continue;
-        }
-        let Ok(page_ids) = scrape_series_page_item_ids(&state.http, sid).await else {
-            continue;
-        };
-        for id in page_ids {
-            if !seen_items.insert(id) {
-                continue;
-            }
-            let Ok(item) = lookup_item(state, &id.to_string()).await else {
-                continue;
-            };
-            if !item.is_catalog_candidate() {
-                continue;
-            }
-            if rules_of(state).is_bundle_or_set(&item.title) {
-                continue;
-            }
-            // 페이지에 섞인 다른 상품 제외
-            if item.series_id() != Some(sid) {
-                continue;
-            }
-            items.push(item);
-        }
-    }
-
-    Ok(items)
-}
-
-async fn scrape_series_page_item_ids(
-    http: &reqwest::Client,
-    series_id: i64,
-) -> AppResult<Vec<i64>> {
-    let url = format!("https://www.aladin.co.kr/shop/common/wseriesitem.aspx?SRID={series_id}");
-    let text = http
-        .get(&url)
-        .header(
-            reqwest::header::USER_AGENT,
-            "linvlib/0.1 (+https://github.com/linvlib)",
-        )
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    Ok(parse_series_page_item_ids(&text))
-}
-
-fn parse_series_page_item_ids(html: &str) -> Vec<i64> {
-    let re = Regex::new(r"(?i)wproduct\.aspx\?ItemId=(\d+)").expect("series page item regex");
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for caps in re.captures_iter(html) {
-        if let Ok(id) = caps[1].parse::<i64>() {
-            if seen.insert(id) {
-                ids.push(id);
-            }
-        }
-    }
-    ids
-}
-
-async fn search_items_raw(
-    state: &AppState,
-    query: &str,
-    search_target: &str,
-    category_id: Option<&str>,
-    query_type: &str,
-) -> AppResult<Vec<AladinItem>> {
-    let mut all_items = Vec::new();
-    // Aladin OpenAPI: `start` is 1-based PAGE index (not item offset).
-    // MaxResults ≤ 50; total results capped at 200 → at most 4 pages of 50.
-    const PAGE_SIZE: i64 = 50;
-    const MAX_PAGES: i64 = 4; // 200 / 50
-    let mut page = 1i64;
-    let category = category_id.unwrap_or("0");
-
-    loop {
-        crate::services::quota::consume_one(state).await?;
-        let response = state
-            .http
-            .get(ALADIN_SEARCH_URL)
-            .query(&[
-                ("ttbkey", state.config.aladin_ttb_key.as_str()),
-                ("Query", query),
-                ("QueryType", query_type),
-                ("MaxResults", &PAGE_SIZE.to_string()),
-                ("start", &page.to_string()),
-                ("SearchTarget", search_target),
-                ("CategoryId", category),
-                ("output", "js"),
-                ("Version", "20131101"),
-                ("OptResult", "seriesInfo"),
-                ("Cover", "Big"),
-            ])
-            .send()
-            .await?;
-
-        let parsed = parse_aladin_response(response).await?;
-        let batch = parsed.item.into_vec();
-        if batch.is_empty() {
-            break;
-        }
-
-        let batch_len = batch.len() as i64;
-        all_items.extend(batch);
-        // 보강 Keyword도 페이지를 넘겨 긴 시리즈를 놓치지 않는다.
-        if batch_len < PAGE_SIZE || page >= MAX_PAGES {
-            break;
-        }
-        page += 1;
-    }
-
-    Ok(all_items)
-}
-
-/// Title 외에 쓸 보조 검색어·쿼리 타입.
-fn expanded_search_queries(query: &str) -> Vec<(String, &'static str)> {
-    let mut out = Vec::new();
-    let chars = query.chars().count();
-
-    if chars >= 24 || query.contains(',') {
-        out.push((query.to_string(), "Keyword"));
-    }
-
-    // 긴 제목은 Title 정확도가 떨어져 앞부분 키워드로도 보강
-    if chars >= 24 {
-        let short: String = query
-            .split_whitespace()
-            .take(4)
-            .collect::<Vec<_>>()
-            .join(" ");
-        if short.chars().count() >= 8 && short != query {
-            out.push((short.clone(), "Title"));
-            out.push((short, "Keyword"));
-        }
-    }
-
-    if let Some((head, _)) = query.split_once(',') {
-        let head = head.trim();
-        if head.chars().count() >= 10 && head != query {
-            out.push((head.to_string(), "Title"));
-            out.push((head.to_string(), "Keyword"));
-        }
-    }
-
-    // 정규화 제목에 " - 부기팝 시리즈" 같은 접미가 남으면 Title 검색이 0건이 된다.
-    if let Some((head, _)) = query.split_once(" - ") {
-        let head = head.trim();
-        if head.chars().count() >= 2 && head != query {
-            out.push((head.to_string(), "Title"));
-            out.push((head.to_string(), "Keyword"));
-        }
-    }
-
-    out
-}
-
-pub async fn lookup_item(state: &AppState, item_id: &str) -> AppResult<AladinItem> {
-    crate::services::quota::consume_one(state).await?;
-    let response = state
-        .http
-        .get(ALADIN_LOOKUP_URL)
-        .query(&[
-            ("ttbkey", state.config.aladin_ttb_key.as_str()),
-            ("ItemId", item_id),
-            ("itemIdType", "ItemId"),
-            ("output", "js"),
-            ("Version", "20131101"),
-            ("OptResult", "seriesInfo"),
-            ("Cover", "Big"),
-        ])
-        .send()
-        .await?;
-
-    let parsed = parse_aladin_response(response).await?;
-    parsed
-        .item
-        .into_vec()
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::NotFound(format!("aladin item {item_id} not found")))
-}
-
-/// 라벨/권수 접미를 제거한 시리즈 제목으로 묶는다.
-/// 알라딘 seriesInfo는 종종 "S노블레스" 같은 레이블이라 신뢰하지 않는다.
-pub fn group_by_series(items: Vec<AladinItem>) -> Vec<GroupedSeries> {
+pub fn group_by_series(items: Vec<CatalogVolume>) -> Vec<GroupedSeries> {
     group_by_series_with(items, default_rules())
 }
 
-pub fn group_by_series_with(items: Vec<AladinItem>, title_rules: &TitleRules) -> Vec<GroupedSeries> {
+pub fn group_by_series_with(items: Vec<CatalogVolume>, title_rules: &TitleRules) -> Vec<GroupedSeries> {
     let mut map: HashMap<String, GroupedSeries> = HashMap::new();
 
     for item in items
@@ -504,488 +154,18 @@ pub fn group_by_series_with(items: Vec<AladinItem>, title_rules: &TitleRules) ->
     groups
 }
 
-pub async fn import_search(
-    state: &AppState,
-    query: &str,
-) -> AppResult<Vec<ImportSearchResult>> {
-    let query = query.trim();
-    let mut items = search_items(state, query).await?;
 
-    // 표기 차이·정규화 보조 검색 (규칙 파일 기반)
-    for alt in rules_of(state).alternate_search_queries(query, None) {
-        if let Ok(extra) = search_items(state, &alt).await {
-            items.extend(extra);
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    items.retain(|item| seen.insert(item.item_id));
-
-    let groups = group_by_series_with(items, rules_of(state));
-    let mut results = Vec::new();
-
-    for group in groups {
-        let existing =
-            repositories::find_series_by_aladin_id(&state.pool, &group.aladin_series_id).await?;
-
-        results.push(ImportSearchResult {
-            aladin_series_id: group.aladin_series_id,
-            title: group.title,
-            author: group.author,
-            publisher: group.publisher,
-            cover_url: group.cover_url,
-            volume_count: group.items.len(),
-            already_imported: existing.is_some(),
-            series_id: existing.map(|s| s.id),
-        });
-    }
-
-    Ok(results)
+pub(crate) fn volume_external_id(item: &CatalogVolume) -> String {
+    item.stored_item_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| item.item_id.to_string())
 }
 
-pub async fn import_series(
-    state: &AppState,
-    aladin_series_id: Option<String>,
-    seed_item_ids: Vec<String>,
-    title_hint: Option<String>,
-) -> AppResult<ImportResponse> {
-    let mut seeds: Vec<String> = seed_item_ids
-        .into_iter()
-        .filter_map(|raw| normalize_aladin_item_id(&raw))
-        .collect();
-    seeds.sort();
-    seeds.dedup();
 
-    let series_key = match (aladin_series_id, seeds.first()) {
-        (Some(id), _) => id,
-        (None, Some(seed)) => format!("item:{seed}"),
-        (None, None) => {
-            return Err(AppError::BadRequest(
-                "aladin_series_id or seed_item_id is required".into(),
-            ));
-        }
-    };
-
-    let existing = repositories::find_series_by_aladin_id(&state.pool, &series_key).await?;
-    if seeds.is_empty() {
-        if let Some(ref series) = existing {
-            if let Ok(extra) =
-                repositories::pending_suggestion_item_ids_for_title(&state.pool, &series.title)
-                    .await
-            {
-                for id in extra {
-                    if let Some(normalized) = normalize_aladin_item_id(&id) {
-                        if !seeds.iter().any(|s| s == &normalized) {
-                            seeds.push(normalized);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let search_query =
-        resolve_search_query(state, &series_key, title_hint.as_deref()).await?;
-
-    let mut search_queries = vec![search_query.clone()];
-    let mut identity_keys = HashSet::new();
-    identity_keys.insert(series_key.clone());
-    identity_keys.insert(format!("title:{}", normalize_series_title(&search_query)));
-    if let Some(title) = series_key.strip_prefix("title:") {
-        identity_keys.insert(format!("title:{}", normalize_series_title(title)));
-    }
-
-    let mut known_item_ids = HashSet::new();
-    for id in &seeds {
-        if let Ok(n) = id.parse::<i64>() {
-            known_item_ids.insert(n);
-        }
-    }
-    let mut volume_title_keys = HashSet::new();
-    let mut stored_aliases = Vec::new();
-    if let Some(ref series) = existing {
-        identity_keys.insert(series.aladin_series_id.clone());
-        identity_keys.insert(format!(
-            "title:{}",
-            normalize_series_title(&series.title)
-        ));
-        search_queries.push(normalize_series_title(&series.title));
-
-        stored_aliases = repositories::list_series_aladin_aliases(&state.pool, series.id).await?;
-        for alias in &stored_aliases {
-            identity_keys.insert(alias.clone());
-            if let Some(query) = search_query_for_aladin_key(alias) {
-                search_queries.push(query);
-            }
-        }
-
-        let vols = repositories::list_volumes(&state.pool, series.id, "asc").await?;
-        for vol in vols {
-            let key = format!("title:{}", normalize_series_title(&vol.title));
-            if key != "title:" {
-                volume_title_keys.insert(key.clone());
-                identity_keys.insert(key.clone());
-                if let Some(query) = search_query_for_aladin_key(&key) {
-                    search_queries.push(query);
-                }
-            }
-            if let Ok(id) = vol.aladin_item_id.parse::<i64>() {
-                known_item_ids.insert(id);
-            } else if let Some(id) = vol
-                .aladin_item_id
-                .strip_prefix("item:")
-                .and_then(|id| id.parse::<i64>().ok())
-            {
-                known_item_ids.insert(id);
-            }
-        }
-    }
-
-    let merged_identity = !stored_aliases.is_empty() || volume_title_keys.len() > 1;
-
-    let title_rules = rules_of(state);
-    let mut items = Vec::new();
-    let mut seen = HashSet::new();
-
-    // Explicit ItemLookUp seeds first — ItemSearch often misses older eBooks.
-    for id in &seeds {
-        match lookup_item(state, id).await {
-            Ok(item) => {
-                if seen.insert(item.item_id) {
-                    items.push(item);
-                }
-            }
-            Err(err) => {
-                tracing::warn!(item_id = %id, error = %err, "seed ItemLookUp failed");
-            }
-        }
-    }
-    if let Some(item_id) = series_key.strip_prefix("item:") {
-        if !seeds.iter().any(|s| s == item_id) {
-            match lookup_item(state, item_id).await {
-                Ok(item) => {
-                    if seen.insert(item.item_id) {
-                        items.push(item);
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        item_id = %item_id,
-                        error = %err,
-                        "series_key ItemLookUp failed"
-                    );
-                }
-            }
-        }
-    }
-
-    let mut seen_queries = HashSet::new();
-    for query in &search_queries {
-        let query = query.trim();
-        if query.is_empty() || !seen_queries.insert(query.to_string()) {
-            continue;
-        }
-        if let Ok(extra) = search_items(state, query).await {
-            for item in extra {
-                if seen.insert(item.item_id) {
-                    items.push(item);
-                }
-            }
-        }
-        for alt in title_rules.alternate_search_queries(query, title_hint.as_deref()) {
-            if seen_queries.insert(alt.clone()) {
-                if let Ok(extra) = search_items(state, &alt).await {
-                    for item in extra {
-                        if seen.insert(item.item_id) {
-                            items.push(item);
-                        }
-                    }
-                }
-            }
-        }
-        for arc_query in title_rules.import_arc_search_queries(query) {
-            if seen_queries.insert(arc_query.clone()) {
-                if let Ok(extra) = search_items(state, &arc_query).await {
-                    for item in extra {
-                        if seen.insert(item.item_id) {
-                            items.push(item);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let raw_hint = title_hint.as_deref().unwrap_or("").trim();
-    if !raw_hint.is_empty()
-        && title_rules.normalize_series_title(raw_hint) != search_query
-        && title_rules.extract_series_arc(raw_hint) > 0
-        && seen_queries.insert(raw_hint.to_string())
-    {
-        if let Ok(extra) = search_items(state, raw_hint).await {
-            for item in extra {
-                if seen.insert(item.item_id) {
-                    items.push(item);
-                }
-            }
-        }
-    }
-
-    // ItemSearch가 일부 권만 줄 때(특히 전자책) 시리즈 페이지로 형제 권을 채운다.
-    items = expand_aladin_series_siblings(state, items, false).await?;
-
-    let groups = group_by_series_with(items.clone(), title_rules);
-    let mut group = if merged_identity {
-        union_groups_for_series(&groups, &identity_keys, &known_item_ids)
-            .or_else(|| select_group(&groups, &series_key, &search_query).cloned())
-    } else {
-        select_group(&groups, &series_key, &search_query).cloned()
-    }
-    .ok_or_else(|| AppError::NotFound("series not found in aladin".into()))?;
-
-    // Explicit seeds (ItemLookUp / 신간 itemId) must survive group dedupe
-    // that drops lone limited editions (e.g. 8.5 초판한정).
-    for id in &seeds {
-        let Ok(n) = id.parse::<i64>() else {
-            continue;
-        };
-        if group.items.iter().any(|i| i.item_id == n) {
-            continue;
-        }
-        if let Some(item) = items.iter().find(|i| i.item_id == n) {
-            group.items.push(item.clone());
-        }
-    }
-
-    // 합본/다른 에디션의 더 이른 출간일을 본권에 반영 (알라딘 재등록 날짜 오인 보정)
-    let date_hints = collect_earliest_volume_dates(&items);
-    apply_earliest_dates(&mut group.items, &date_hints);
-
-    let mut dates: Vec<_> = group
-        .items
-        .iter()
-        .filter_map(|i| parse_pub_date(&i.pub_date))
-        .collect();
-    dates.sort();
-
-    let first_published_at = dates
-        .first()
-        .copied()
-        .map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
-    let latest_published_at = dates
-        .last()
-        .copied()
-        .map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
-
-    // 요청한 시리즈(갱신)가 있으면 그 행에 붙인다. 정규화로 키가 바뀌어도 새 행을 만들지 않는다.
-    // 수동 합병 시리즈는 대표 제목/키를 유지하고, 나머지 알라딘 식별자는 별칭으로 남긴다.
-    let series = if let Some(existing) = existing {
-        if merged_identity {
-            for candidate in groups.iter().filter(|g| {
-                let title_key = format!("title:{}", normalize_series_title(&g.title));
-                identity_keys.contains(&g.aladin_series_id)
-                    || identity_keys.contains(&title_key)
-                    || g.items.iter().any(|item| known_item_ids.contains(&item.item_id))
-            }) {
-                if candidate.aladin_series_id != existing.aladin_series_id {
-                    repositories::add_series_aladin_alias(
-                        &state.pool,
-                        existing.id,
-                        &candidate.aladin_series_id,
-                    )
-                    .await?;
-                }
-            }
-            existing
-        } else {
-            repositories::canonicalize_series_identity(
-                &state.pool,
-                existing.id,
-                &group.aladin_series_id,
-                &group.title,
-            )
-            .await?
-        }
-    } else {
-        // seed-only import: attach to an already-cataloged title: key if present
-        if let Some(by_title) =
-            repositories::find_series_by_aladin_id(&state.pool, &group.aladin_series_id).await?
-        {
-            by_title
-        } else {
-            repositories::upsert_series_with_cover(
-                &state.pool,
-                Uuid::new_v4(),
-                &group.title,
-                group.author.as_deref(),
-                group.publisher.as_deref(),
-                &group.aladin_series_id,
-                first_published_at,
-                latest_published_at,
-                // 대표 표지는 비워 두고 목록/상세는 최신 권 표지를 쓴다.
-                None,
-            )
-            .await?
-        }
-    };
-
-    let existing_count = repositories::count_volumes(&state.pool, series.id).await?;
-
-    if existing_count == 0 {
-        // 첫 등록: 제목 권수(가능하면) 또는 출간일 순으로 1..n
-        let numbered_items = assign_volume_numbers(&group.items);
-        for (item, volume_number) in &numbered_items {
-            repositories::upsert_volume(
-                &state.pool,
-                Uuid::new_v4(),
-                series.id,
-                *volume_number,
-                &clean_volume_title(&item.title),
-                non_empty(&item.cover).as_deref(),
-                parse_pub_date(&item.pub_date),
-                &item.item_id.to_string(),
-                if item.isbn13.is_empty() {
-                    None
-                } else {
-                    Some(item.isbn13.as_str())
-                },
-            )
-            .await?;
-        }
-    } else {
-        // 갱신: 기존 item_id는 메타만 갱신. 같은 권수 키의 다른 에디션(전자책 등)은 추가하지 않는다.
-        let existing_vols = repositories::list_volumes(&state.pool, series.id, "asc").await?;
-        let mut key_to_id: HashMap<(u8, u8, i64, u8, u8, u8), Uuid> = HashMap::new();
-        for vol in &existing_vols {
-            // 세트/합본으로 잘못 들어온 행은 권수 키를 점유하지 않게 한다.
-            if title_rules.is_bundle_or_set(&vol.title) {
-                continue;
-            }
-            if let Some(key) = volume_identity_key(&vol.title) {
-                key_to_id.entry(key).or_insert(vol.id);
-            }
-        }
-
-        let mut next = repositories::max_volume_number(&state.pool, series.id).await? + 1;
-        let mut fresh = Vec::new();
-        for item in &group.items {
-            let item_id = item.item_id.to_string();
-            let exists = repositories::find_volume_by_aladin_item_id(&state.pool, &item_id)
-                .await?
-                .is_some();
-            if exists {
-                repositories::upsert_volume(
-                    &state.pool,
-                    Uuid::new_v4(),
-                    series.id,
-                    0,
-                    &clean_volume_title(&item.title),
-                    non_empty(&item.cover).as_deref(),
-                    parse_pub_date(&item.pub_date),
-                    &item_id,
-                    if item.isbn13.is_empty() {
-                        None
-                    } else {
-                        Some(item.isbn13.as_str())
-                    },
-                )
-                .await?;
-                continue;
-            }
-
-            let cleaned = clean_volume_title(&item.title);
-            if let Some(key) = volume_identity_key(&cleaned) {
-                if let Some(&existing_id) = key_to_id.get(&key) {
-                    repositories::refresh_volume_metadata(
-                        &state.pool,
-                        existing_id,
-                        non_empty(&item.cover).as_deref(),
-                        parse_pub_date(&item.pub_date),
-                        if item.isbn13.is_empty() {
-                            None
-                        } else {
-                            Some(item.isbn13.as_str())
-                        },
-                    )
-                    .await?;
-                    continue;
-                }
-            }
-
-            fresh.push(item.clone());
-        }
-        fresh.sort_by(|a, b| {
-            parse_pub_date(&a.pub_date)
-                .cmp(&parse_pub_date(&b.pub_date))
-                .then_with(|| a.item_id.cmp(&b.item_id))
-        });
-        for item in fresh {
-            let cleaned = clean_volume_title(&item.title);
-            let inserted = repositories::upsert_volume(
-                &state.pool,
-                Uuid::new_v4(),
-                series.id,
-                next,
-                &cleaned,
-                non_empty(&item.cover).as_deref(),
-                parse_pub_date(&item.pub_date),
-                &item.item_id.to_string(),
-                if item.isbn13.is_empty() {
-                    None
-                } else {
-                    Some(item.isbn13.as_str())
-                },
-            )
-            .await?;
-            if let Some(key) = volume_identity_key(&cleaned) {
-                key_to_id.entry(key).or_insert(inserted.id);
-            }
-            next += 1;
-        }
-    }
-
-    // 잘못 들어온 세트/합본 행은 본편이 채워진 뒤 제거
-    drop_bundle_volumes(state, series.id).await?;
-
-    // 과거에 생긴 동일 권수 중복(종이/전자 등)을 정리한 뒤 권번호 재정렬
-    collapse_duplicate_volumes_by_identity(state, series.id).await?;
-    reconcile_volume_numbers_from_titles(state, series.id).await?;
-
-    repositories::refresh_series_publish_dates(&state.pool, series.id).await?;
-    repositories::touch_series_refreshed(&state.pool, series.id).await?;
-
-    let volume_count = repositories::count_volumes(&state.pool, series.id).await?;
-
-    Ok(ImportResponse {
-        series_id: series.id,
-        title: series.title,
-        volume_count,
-    })
-}
-
-/// Parse bare ItemId, `item:…`, or Aladin product URL into a numeric ItemId.
-pub fn normalize_aladin_item_id(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(caps) = Regex::new(r"(?i)(?:[?&]itemid=|/itemid/)(\d{5,})")
-        .ok()?
-        .captures(trimmed)
-    {
-        return Some(caps[1].to_string());
-    }
-    if let Some(id) = trimmed.strip_prefix("item:") {
-        let id = id.trim();
-        if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
-            return Some(id.to_string());
-        }
-        return None;
-    }
-    if trimmed.chars().all(|c| c.is_ascii_digit()) && trimmed.len() >= 5 {
-        return Some(trimmed.to_string());
-    }
-    None
-}
-
-async fn drop_bundle_volumes(state: &AppState, series_id: Uuid) -> AppResult<()> {
+pub(crate) async fn drop_bundle_volumes(state: &AppState, series_id: Uuid) -> AppResult<()> {
     let volumes = repositories::list_volumes(&state.pool, series_id, "asc").await?;
     let rules = rules_of(state);
     for vol in volumes {
@@ -996,128 +176,7 @@ async fn drop_bundle_volumes(state: &AppState, series_id: Uuid) -> AppResult<()>
     Ok(())
 }
 
-/// Fetch Aladin ItemNewAll candidates (LN paper + filtered eBook).
-pub(crate) async fn fetch_new_release_items(state: &AppState) -> AppResult<Vec<AladinItem>> {
-    const PAGE_SIZE: i64 = 50;
-    // Aladin caps list results around 1000 → 20 pages of 50.
-    const MAX_PAGES: i64 = 20;
-
-    let mut all = Vec::new();
-    let mut seen = HashSet::new();
-
-    // Domestic light-novel paper books.
-    for page in 1..=MAX_PAGES {
-        let batch = fetch_item_list_page(
-            state,
-            "ItemNewAll",
-            "Book",
-            Some(LIGHT_NOVEL_CATEGORY_ID),
-            page,
-            PAGE_SIZE,
-        )
-        .await?;
-        if batch.is_empty() {
-            break;
-        }
-        let n = batch.len() as i64;
-        for item in batch {
-            if seen.insert(item.item_id) {
-                all.push(item);
-            }
-        }
-        if n < PAGE_SIZE {
-            break;
-        }
-    }
-
-    // eBooks (no LN category id that reliably works) — filter with is_catalog_candidate.
-    for page in 1..=MAX_PAGES {
-        let batch =
-            fetch_item_list_page(state, "ItemNewAll", "eBook", None, page, PAGE_SIZE).await?;
-        if batch.is_empty() {
-            break;
-        }
-        let n = batch.len() as i64;
-        for item in batch {
-            if seen.insert(item.item_id) {
-                all.push(item);
-            }
-        }
-        if n < PAGE_SIZE {
-            break;
-        }
-    }
-
-    Ok(all
-        .into_iter()
-        .filter(|item| item.is_catalog_candidate())
-        .collect())
-}
-
-
-async fn fetch_item_list_page(
-    state: &AppState,
-    query_type: &str,
-    search_target: &str,
-    category_id: Option<&str>,
-    page: i64,
-    page_size: i64,
-) -> AppResult<Vec<AladinItem>> {
-    crate::services::quota::consume_one(state).await?;
-    let category = category_id.unwrap_or("0");
-    let response = state
-        .http
-        .get(ALADIN_LIST_URL)
-        .query(&[
-            ("ttbkey", state.config.aladin_ttb_key.as_str()),
-            ("QueryType", query_type),
-            ("MaxResults", &page_size.to_string()),
-            ("start", &page.to_string()),
-            ("SearchTarget", search_target),
-            ("CategoryId", category),
-            ("output", "js"),
-            ("Version", "20131101"),
-            ("OptResult", "seriesInfo"),
-            ("Cover", "Big"),
-        ])
-        .send()
-        .await?;
-    let parsed = parse_aladin_response(response).await?;
-    Ok(parsed.item.into_vec())
-}
-
-async fn resolve_search_query(
-    state: &AppState,
-    series_key: &str,
-    title_hint: Option<&str>,
-) -> AppResult<String> {
-    if let Some(existing) =
-        repositories::find_series_by_aladin_id(&state.pool, series_key).await?
-    {
-        // 과거에 "… 09 (상)"처럼 권 접미가 붙은 제목으로 저장된 경우에도
-        // 본편 제목으로 검색해야 나머지 권이 잡힌다.
-        return Ok(normalize_series_title(&existing.title));
-    }
-
-    if let Some(hint) = title_hint.map(str::trim).filter(|s| !s.is_empty()) {
-        return Ok(normalize_series_title(hint));
-    }
-
-    if let Some(item_id) = series_key.strip_prefix("item:") {
-        let item = lookup_item(state, item_id).await?;
-        return Ok(normalize_series_title(&item.title));
-    }
-
-    if let Some(title) = series_key.strip_prefix("title:") {
-        return Ok(normalize_series_title(title));
-    }
-
-    Err(AppError::BadRequest(
-        "title is required to import this series".into(),
-    ))
-}
-
-fn select_group<'a>(
+pub(crate) fn select_group<'a>(
     groups: &'a [GroupedSeries],
     series_key: &str,
     search_query: &str,
@@ -1166,6 +225,7 @@ fn select_group<'a>(
     })
 }
 
+#[allow(dead_code)]
 fn search_query_for_aladin_key(key: &str) -> Option<String> {
     let title = key.strip_prefix("title:")?;
     let query = normalize_series_title(title);
@@ -1176,6 +236,7 @@ fn search_query_for_aladin_key(key: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn union_groups_for_series(
     groups: &[GroupedSeries],
     identity_keys: &HashSet<String>,
@@ -1221,7 +282,7 @@ fn union_groups_for_series(
     Some(group)
 }
 
-fn non_empty(value: &str) -> Option<String> {
+pub(crate) fn non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None
@@ -1241,9 +302,9 @@ fn is_limited_edition(title: &str) -> bool {
 }
 
 /// 같은 권번호·같은 학년/부·같은 상중하·같은 아크의 다른 에디션이 있으면 대표 한 권만 남긴다.
-fn dedupe_volume_items(items: Vec<AladinItem>) -> Vec<AladinItem> {
+fn dedupe_volume_items(items: Vec<CatalogVolume>) -> Vec<CatalogVolume> {
     // (school_year, story_part, major, minor, sangha, sss_arc)
-    let mut by_key: HashMap<(u8, u8, i64, u8, u8, u8), Vec<AladinItem>> = HashMap::new();
+    let mut by_key: HashMap<(u8, u8, i64, u8, u8, u8), Vec<CatalogVolume>> = HashMap::new();
     let mut unnumbered = Vec::new();
 
     for item in items {
@@ -1267,7 +328,7 @@ fn dedupe_volume_items(items: Vec<AladinItem>) -> Vec<AladinItem> {
         }
     }
 
-    let mut result: Vec<AladinItem> = by_key
+    let mut result: Vec<CatalogVolume> = by_key
         .into_values()
         .map(|mut editions| {
             editions.sort_by(|a, b| {
@@ -1299,8 +360,8 @@ fn dedupe_volume_items(items: Vec<AladinItem>) -> Vec<AladinItem> {
 }
 
 /// 권수 없는 항목(청춘 돼지 등)도 특별판/본편을 하나로 합친다.
-fn dedupe_unnumbered_editions(items: Vec<AladinItem>) -> Vec<AladinItem> {
-    let mut by_key: HashMap<String, Vec<AladinItem>> = HashMap::new();
+fn dedupe_unnumbered_editions(items: Vec<CatalogVolume>) -> Vec<CatalogVolume> {
+    let mut by_key: HashMap<String, Vec<CatalogVolume>> = HashMap::new();
     for item in items {
         let key = clean_volume_title(&item.title).to_lowercase();
         by_key.entry(key).or_default().push(item);
@@ -1318,14 +379,14 @@ fn dedupe_unnumbered_editions(items: Vec<AladinItem>) -> Vec<AladinItem> {
         .collect()
 }
 
-fn edition_preference(item: &AladinItem) -> i32 {
+fn edition_preference(item: &CatalogVolume) -> i32 {
     rules().edition_preference(&item.title)
 }
 
 /// DB용 권번호.
 /// - SSS/Ex 등 아크가 섞이면 출간일 순(아크가 본편 사이에 끼도록).
 /// - 그 외에는 제목에서 뽑은 권수를 우선(개정판 출간일로 순서가 꼬이는 경우 방지).
-fn assign_volume_numbers(items: &[AladinItem]) -> Vec<(AladinItem, i64)> {
+pub(crate) fn assign_volume_numbers(items: &[CatalogVolume]) -> Vec<(CatalogVolume, i64)> {
     if items.iter().any(|i| extract_series_arc(&i.title) > 0) {
         return assign_volume_numbers_by_release(items);
     }
@@ -1335,7 +396,7 @@ fn assign_volume_numbers(items: &[AladinItem]) -> Vec<(AladinItem, i64)> {
     assign_volume_numbers_by_release(items)
 }
 
-fn try_assign_volume_numbers_by_title(items: &[AladinItem]) -> Option<Vec<(AladinItem, i64)>> {
+fn try_assign_volume_numbers_by_title(items: &[CatalogVolume]) -> Option<Vec<(CatalogVolume, i64)>> {
     let mut keyed = Vec::with_capacity(items.len());
     let mut seen = HashSet::new();
     for item in items {
@@ -1367,7 +428,7 @@ fn try_assign_volume_numbers_by_title(items: &[AladinItem]) -> Option<Vec<(Aladi
 }
 
 /// DB용 권번호: 출간일 오름차순으로 1..n
-fn assign_volume_numbers_by_release(items: &[AladinItem]) -> Vec<(AladinItem, i64)> {
+fn assign_volume_numbers_by_release(items: &[CatalogVolume]) -> Vec<(CatalogVolume, i64)> {
     let mut sorted = items.to_vec();
     sorted.sort_by(|a, b| {
         parse_pub_date(&a.pub_date)
@@ -1394,26 +455,36 @@ fn volume_identity_key(title: &str) -> Option<(u8, u8, i64, u8, u8, u8)> {
 }
 
 /// 같은 시리즈 안에서 동일 권수 키로 쌓인 중복 행을 하나로 합친다.
-async fn collapse_duplicate_volumes_by_identity(
+/// 권번호가 없는 항목(단편집·SS집 등)은 정규화 제목으로 묶는다.
+pub(crate) async fn collapse_duplicate_volumes_by_identity(
     state: &AppState,
     series_id: Uuid,
 ) -> AppResult<()> {
     let volumes = repositories::list_volumes(&state.pool, series_id, "asc").await?;
     let mut by_key: HashMap<(u8, u8, i64, u8, u8, u8), Vec<_>> = HashMap::new();
+    let mut by_title: HashMap<String, Vec<_>> = HashMap::new();
     for vol in volumes {
-        let Some(key) = volume_identity_key(&vol.title) else {
-            continue;
-        };
-        by_key.entry(key).or_default().push(vol);
+        if let Some(key) = volume_identity_key(&vol.title) {
+            by_key.entry(key).or_default().push(vol);
+        } else {
+            let tkey = unnumbered_title_key(&vol.title);
+            if !tkey.is_empty() {
+                by_title.entry(tkey).or_default().push(vol);
+            }
+        }
     }
 
-    for mut group in by_key.into_values() {
-        if group.len() < 2 {
-            continue;
-        }
+    for mut group in by_key
+        .into_values()
+        .chain(by_title.into_values())
+        .filter(|g| g.len() >= 2)
+    {
         group.sort_by(|a, b| {
             edition_preference_title(&b.title)
                 .cmp(&edition_preference_title(&a.title))
+                .then_with(|| {
+                    prefer_non_ebook_cover(&b.cover_url).cmp(&prefer_non_ebook_cover(&a.cover_url))
+                })
                 .then_with(|| a.published_at.cmp(&b.published_at))
                 .then_with(|| a.volume_number.cmp(&b.volume_number))
                 .then_with(|| a.id.cmp(&b.id))
@@ -1434,13 +505,27 @@ async fn collapse_duplicate_volumes_by_identity(
     Ok(())
 }
 
+fn unnumbered_title_key(title: &str) -> String {
+    clean_volume_title(title).to_lowercase()
+}
+
+fn prefer_non_ebook_cover(cover: &Option<String>) -> i32 {
+    // Leftover Aladin cover filenames: ebook names often start with `e`, paper with `k`.
+    // When collapsing duplicates, prefer the paper-looking URL. Yes24 paths (`…/L`) do not.
+    match cover.as_deref().and_then(|u| u.rsplit('/').next()) {
+        Some(name) if name.to_ascii_lowercase().starts_with('e') => 0,
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
 fn edition_preference_title(title: &str) -> i32 {
     rules().edition_preference(title)
 }
 
 /// 이미 저장된 권을 제목 권수 기준으로 재정렬한다.
 /// SSS/Ex 아크가 있거나 권수 추출이 안 되면 손대지 않는다.
-async fn reconcile_volume_numbers_from_titles(
+pub(crate) async fn reconcile_volume_numbers_from_titles(
     state: &AppState,
     series_id: Uuid,
 ) -> AppResult<()> {
@@ -1529,13 +614,14 @@ pub fn format_volume_label_from_title(
     rules().format_volume_label_from_title(title, fallback_number, arc_volume_count)
 }
 
-fn parse_pub_date(value: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_pub_date(value: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
 /// 본권·합본·다른 에디션을 모두 보고 (학년,권수…)별 가장 이른 출간일을 모은다.
+#[allow(dead_code)]
 fn collect_earliest_volume_dates(
-    items: &[AladinItem],
+    items: &[CatalogVolume],
 ) -> HashMap<(u8, u8, i64, u8, u8, u8), NaiveDate> {
     let mut map: HashMap<(u8, u8, i64, u8, u8, u8), NaiveDate> = HashMap::new();
     for item in items {
@@ -1556,6 +642,7 @@ fn collect_earliest_volume_dates(
     map
 }
 
+#[allow(dead_code)]
 fn volume_date_key(title: &str) -> Option<(u8, u8, i64, u8, u8, u8)> {
     let (major, minor) = extract_volume_parts_for_date_hint(title)?;
     Some((
@@ -1568,6 +655,7 @@ fn volume_date_key(title: &str) -> Option<(u8, u8, i64, u8, u8, u8)> {
     ))
 }
 
+#[allow(dead_code)]
 fn extract_volume_parts_for_date_hint(title: &str) -> Option<(i64, u8)> {
     if rules().is_art_works_title(title) {
         return None;
@@ -1579,6 +667,7 @@ fn extract_volume_parts_for_date_hint(title: &str) -> Option<(i64, u8)> {
 }
 
 /// `무직전생 26 + 스페셜북 합본` → 26권 출간일 힌트
+#[allow(dead_code)]
 fn extract_bundle_primary_volume(title: &str) -> Option<(i64, u8)> {
     let stripped = Regex::new(r"\s*\d+학년\s*편\s*")
         .unwrap()
@@ -1594,8 +683,9 @@ fn extract_bundle_primary_volume(title: &str) -> Option<(i64, u8)> {
     Some((major, minor))
 }
 
+#[allow(dead_code)]
 fn apply_earliest_dates(
-    items: &mut [AladinItem],
+    items: &mut [CatalogVolume],
     hints: &HashMap<(u8, u8, i64, u8, u8, u8), NaiveDate>,
 ) {
     for item in items.iter_mut() {
@@ -1621,8 +711,8 @@ fn apply_earliest_dates(
 mod tests {
     use super::*;
 
-    fn item(title: &str, id: i64) -> AladinItem {
-        AladinItem {
+    fn item(title: &str, id: i64) -> CatalogVolume {
+        CatalogVolume {
             title: title.into(),
             author: "작가".into(),
             publisher: "출판".into(),
@@ -1630,31 +720,9 @@ mod tests {
             isbn13: String::new(),
             item_id: id,
             cover: "a".into(),
-            category_id: Some(50927),
             category_name: Some("국내도서>만화/라이트노벨>라이트 노벨>S 노벨".into()),
-            series_info: None,
-            sub_info: None,
+            stored_item_id: None,
         }
-    }
-
-    #[test]
-    fn normalize_aladin_item_id_from_url_and_bare() {
-        assert_eq!(
-            normalize_aladin_item_id(
-                "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=156790758"
-            )
-            .as_deref(),
-            Some("156790758")
-        );
-        assert_eq!(
-            normalize_aladin_item_id("164448182").as_deref(),
-            Some("164448182")
-        );
-        assert_eq!(
-            normalize_aladin_item_id("item:171163543").as_deref(),
-            Some("171163543")
-        );
-        assert_eq!(normalize_aladin_item_id("not-an-id"), None);
     }
 
     #[test]
@@ -1679,7 +747,6 @@ mod tests {
     #[test]
     fn catalog_candidate_keeps_ln_ebook_imprint() {
         let mut ebook = item("어떤 라노베 1", 1);
-        ebook.category_id = Some(12345);
         ebook.category_name = Some("전자책>소설".into());
         ebook.publisher = "시프트노벨".into();
         assert!(ebook.is_catalog_candidate());
@@ -1688,20 +755,33 @@ mod tests {
     #[test]
     fn catalog_candidate_rejects_comic_category() {
         let mut comic = item("눈을 떴더니 최강 무장 01", 2);
-        comic.category_id = Some(999);
         comic.category_name = Some("전자책>만화".into());
         comic.publisher = "시프트코믹스".into();
         assert!(!comic.is_catalog_candidate());
     }
 
     #[test]
-    fn expands_long_comma_titles_for_search() {
-        let q = "눈을 떴더니 최강 무장과 우주선을 가지고 있어서, 집 한채를 목표로 용병으로 자유롭게 살고 싶다";
-        let variants = expanded_search_queries(q);
-        assert!(variants.iter().any(|(s, t)| s == q && *t == "Keyword"));
-        assert!(variants
-            .iter()
-            .any(|(s, t)| s.contains("우주선") && !s.contains("집 한채") && *t == "Title"));
+    fn catalog_candidate_rejects_unknown_publisher_without_ln_signal() {
+        let mut general = item("클린 코드", 3);
+        general.category_name = Some("국내도서".into());
+        general.publisher = "인사이트".into();
+        assert!(!general.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_keeps_ln_imprint_without_category() {
+        let mut ln = item("마녀와 용병 1", 4);
+        ln.category_name = Some("국내도서".into());
+        ln.publisher = "시프트노벨".into();
+        assert!(ln.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_rejects_comic_title_marker() {
+        let mut comic = item("[만화] 어떤 작품 1", 5);
+        comic.category_name = Some("국내도서".into());
+        comic.publisher = "디앤씨미디어".into();
+        assert!(!comic.is_catalog_candidate());
     }
 
     #[test]
@@ -1729,14 +809,6 @@ mod tests {
             normalize_series_title("새벽의 부기팝 - 부기팝 시리즈 6, NT Novel"),
             "새벽의 부기팝"
         );
-    }
-
-    #[test]
-    fn expands_dash_suffix_titles_for_search() {
-        let variants = expanded_search_queries("새벽의 부기팝 - 부기팝 시리즈");
-        assert!(variants
-            .iter()
-            .any(|(s, t)| s == "새벽의 부기팝" && *t == "Title"));
     }
 
     #[test]
@@ -1996,7 +1068,7 @@ mod tests {
         assert_eq!(groups[0].items.len(), 4);
     }
 
-    fn item_with_date(title: &str, id: i64, pub_date: &str) -> AladinItem {
+    fn item_with_date(title: &str, id: i64, pub_date: &str) -> CatalogVolume {
         let mut i = item(title, id);
         i.pub_date = pub_date.into();
         i
@@ -2080,20 +1152,6 @@ mod tests {
         assert_eq!(
             format_volume_label_from_title("변경의 팔라딘 3 - 하 - 철원의 궤적", 4, 0),
             "3하"
-        );
-    }
-
-    #[test]
-    fn parses_series_page_item_ids() {
-        let html = r#"
-            <a href="/shop/wproduct.aspx?ItemId=322382456">01</a>
-            <a href="https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=383428338&amp;start=p1">08</a>
-            <a href="/shop/wproduct.aspx?ItemId=322382456">dup</a>
-            <a href="/shop/wbasket.aspx?ItemId=999">ignore</a>
-        "#;
-        assert_eq!(
-            parse_series_page_item_ids(html),
-            vec![322382456, 383428338]
         );
     }
 

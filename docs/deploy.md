@@ -199,7 +199,7 @@ sudo systemctl restart linvlib
 DATABASE_URL=sqlite:linvlib.db
 JWT_SECRET=긴-임의-문자열
 JWT_EXPIRY_HOURS=168
-ALADIN_TTB_KEY=ttb...
+YES24_API_KEY=...
 BIND_ADDR=0.0.0.0:3000
 ADMIN_EMAIL=관리자@example.com
 APP_BASE_URL=https://linvlib.cloud
@@ -211,6 +211,8 @@ SMTP_PASSWORD=...
 SMTP_FROM=linvlib <noreply@example.com>
 RUST_LOG=info,linvlib=info
 ```
+
+`YES24_API_KEY`는 필수. 카탈로그·신간은 [CATALOG.md](CATALOG.md).
 
 
 | 변수               | 의미                                               |
@@ -318,7 +320,7 @@ sudo systemctl stop linvlib   # 바이너리 잠김/권한 이슈 완화
 | `config/title_rules.toml` | 해당 파일            | 재시작                         |
 | `.env`                    | `.env`           | 재시작                         |
 | DB 스키마(마이그레이션)            | 바이너리 (마이그레이션 내장) | 재시작 — DB 파일은 백업 후 유지        |
-| 카탈로그 DB 교체              | Deploy GUI로 `work/linvlib-catalog.db` | 백업 후 업로드. 마이그레이션 `008`–`012` 필요 |
+| DB 파일 교체 | Deploy GUI의 로컬 `.db` 업로드 | 원격 백업 후 `linvlib.db` 교체. 재시작 시 남은 마이그레이션이 적용됨 |
 
 
 `migrations/`·소스·`target/` 전체는 서버에 올릴 필요 없습니다.
@@ -327,15 +329,16 @@ sudo systemctl stop linvlib   # 바이너리 잠김/권한 이슈 완화
 
 
 
-## 8. 알라딘 신간 갱신 · DB 백업 · Discord
+## 8. 신간 갱신 · DB 백업 · Discord
 
 | 항목 | 값 |
 | --- | --- |
-| 신간 갱신 | 매일 **KST 23:30** · 알라딘 **신간 목록(ItemList)** |
+| 신간 갱신 | 매일 **KST 23:30** · 예스24 (LN 카테고리 신상품 + 임프린트 최근 출간) |
 | 갱신 대상 | 신간 목록에 뜨고 **이미 카탈로그에 있는** 작품만 (전량 검색 없음) |
 | 미등록 신간 | 관리 UI **추천** 탭에 적재 → 관리자가 가져오기/숨기기 |
+| 공급자 | 예스24 — [CATALOG.md](CATALOG.md) |
 | DB 백업 | 매일 **KST 자정** 1회 |
-| Discord 상태 | 매일 **KST 08:00** (`DISCORD_STATUS_WEBHOOK_URL`) |
+| Discord 상태 | 스케줄 신간 갱신이 끝난 직후 (`DISCORD_STATUS_WEBHOOK_URL`) |
 | 백업 보관 | **14일** (`BACKUP_RETAIN_DAYS`) |
 | 백업 디렉터리 | `~/linvlib/backups` |
 

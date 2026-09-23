@@ -519,7 +519,8 @@ pub async fn add_series_aladin_alias(
     Ok(())
 }
 
-/// Move Aladin identities from a merged-away series onto the surviving series.
+/// Copy external series keys from a merged-away series onto the survivor.
+/// Keys live in `aladin_series_id` and `series_aladin_aliases` (historical names).
 pub async fn absorb_series_aladin_identities(
     pool: &SqlitePool,
     source_id: Uuid,
@@ -2638,23 +2639,23 @@ pub async fn pending_suggestion_item_ids_for_title(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-pub async fn get_aladin_quota_used(pool: &SqlitePool, usage_date: &str) -> AppResult<i64> {
+pub async fn get_yes24_quota_used(pool: &SqlitePool, usage_date: &str) -> AppResult<i64> {
     let row: Option<(i64,)> =
-        sqlx::query_as("SELECT query_count FROM aladin_api_usage WHERE usage_date = ?")
+        sqlx::query_as("SELECT query_count FROM yes24_api_usage WHERE usage_date = ?")
             .bind(usage_date)
             .fetch_optional(pool)
             .await?;
     Ok(row.map(|(c,)| c).unwrap_or(0))
 }
 
-pub async fn list_recent_aladin_quota(
+pub async fn list_recent_yes24_quota(
     pool: &SqlitePool,
     limit: i64,
 ) -> AppResult<Vec<(String, i64)>> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         r#"
         SELECT usage_date, query_count
-        FROM aladin_api_usage
+        FROM yes24_api_usage
         ORDER BY usage_date DESC
         LIMIT ?
         "#,
@@ -2666,7 +2667,7 @@ pub async fn list_recent_aladin_quota(
 }
 
 /// Atomically reserve `n` queries for today. Returns Ok(true) if reserved, Ok(false) if over soft limit.
-pub async fn try_consume_aladin_quota(
+pub async fn try_consume_yes24_quota(
     pool: &SqlitePool,
     usage_date: &str,
     n: i64,
@@ -2678,7 +2679,7 @@ pub async fn try_consume_aladin_quota(
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
-        INSERT INTO aladin_api_usage (usage_date, query_count)
+        INSERT INTO yes24_api_usage (usage_date, query_count)
         VALUES (?, 0)
         ON CONFLICT(usage_date) DO NOTHING
         "#,
@@ -2688,7 +2689,7 @@ pub async fn try_consume_aladin_quota(
     .await?;
 
     let used: (i64,) =
-        sqlx::query_as("SELECT query_count FROM aladin_api_usage WHERE usage_date = ?")
+        sqlx::query_as("SELECT query_count FROM yes24_api_usage WHERE usage_date = ?")
             .bind(usage_date)
             .fetch_one(&mut *tx)
             .await?;
@@ -2699,7 +2700,7 @@ pub async fn try_consume_aladin_quota(
     }
 
     sqlx::query(
-        "UPDATE aladin_api_usage SET query_count = query_count + ? WHERE usage_date = ?",
+        "UPDATE yes24_api_usage SET query_count = query_count + ? WHERE usage_date = ?",
     )
     .bind(n)
     .bind(usage_date)

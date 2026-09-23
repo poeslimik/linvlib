@@ -14,7 +14,7 @@ const LAST_SCHEDULED_REFRESH_DATE_KEY: &str = "last_scheduled_refresh_date";
 const RUN_HOUR: u32 = 23;
 const RUN_MINUTE: u32 = 30;
 
-/// Poll every minute and run Aladin *new-release list* refresh once per KST day
+/// Poll every minute and run Yes24 *new-release list* refresh once per KST day
 /// at/after 23:30. Matched catalog series are updated; unmatched LN titles become
 /// admin suggestions.
 ///
@@ -29,7 +29,7 @@ pub fn spawn_scheduled_refresh(state: AppState) {
             server_time = %quota::seoul_now_display(),
             last_scheduled_refresh_date = ?last_run_date.map(|d| d.to_string()),
             run_at = %format!("{RUN_HOUR:02}:{RUN_MINUTE:02} KST"),
-            "Aladin scheduled refresh started (checks every 60s)"
+            "Yes24 scheduled refresh started (checks every 60s)"
         );
 
         loop {
@@ -41,15 +41,18 @@ pub fn spawn_scheduled_refresh(state: AppState) {
                 continue;
             }
 
-            let quota_remaining = quota::remaining_soft_quota(&state).await.ok();
             tracing::info!(
                 today = %today,
                 server_time = %quota::seoul_now_display(),
-                ?quota_remaining,
-                "KST 23:30 window — starting scheduled Aladin new-release refresh"
+                "KST 23:30 window — starting scheduled Yes24 new-release refresh"
             );
 
-            match new_releases::start_background(state.clone()).await {
+            match new_releases::start_background(
+                state.clone(),
+                new_releases::RefreshOrigin::Scheduled,
+            )
+            .await
+            {
                 Ok(start) if start.started => {
                     // Job runs in background; mark schedule date now so we don't
                     // spawn duplicates every minute. Failures still leave a note.
@@ -60,7 +63,7 @@ pub fn spawn_scheduled_refresh(state: AppState) {
                         &today.format("%Y-%m-%d").to_string(),
                     )
                     .await;
-                    tracing::info!("scheduled Aladin new-release refresh started in background");
+                    tracing::info!("scheduled Yes24 new-release refresh started in background");
                 }
                 Ok(start) if start.already_running => {
                     tracing::info!("scheduled refresh skipped: already running");
@@ -72,7 +75,7 @@ pub fn spawn_scheduled_refresh(state: AppState) {
                     tracing::error!(
                         error = %err,
                         server_time = %quota::seoul_now_display(),
-                        "scheduled Aladin refresh failed to start; will retry"
+                        "scheduled Yes24 refresh failed to start; will retry"
                     );
                 }
             }

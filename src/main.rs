@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     scheduler::spawn_scheduled_refresh(state.clone());
     backup::spawn_daily_backup(state.clone());
-    status_report::spawn_daily_status_report(state.clone());
+    status_report::log_startup(&state);
     email::spawn_unverified_user_cleanup(state.clone());
     let app = routes::create_router(state);
 
