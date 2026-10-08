@@ -34,7 +34,7 @@ python server.py
 - WSL `cargo build --release`
 - `scp` 업로드, 바이너리 시 `systemctl stop` → 업로드 → `restart`
 - SSH 테스트, 서비스 상태, journal 로그, 원격 즉시 백업
-- **로컬 `.db` 업로드**: 원격 백업 → stop → `linvlib.db` 교체 → WAL/SHM 정리 → 재시작
+- **로컬 `.db` 업로드**: 파일명과 관계없이 서버 `linvlib.db`로 바꿔 교체. 원격 백업 → stop → 업로드 → WAL/SHM 정리 → 재시작
 - **`.env` 편집**: 로컬/서버 `.env`를 메모장처럼 불러와 저장 (서버 저장 시 재시작 옵션). 내용은 로그에 남기지 않음
 
 localhost에만 bind 됩니다. 스테이징 파일은 `tools/deploy-gui/_uploads/`에 잠시 저장됩니다.

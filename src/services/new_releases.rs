@@ -119,6 +119,9 @@ pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
                     .or_insert_with(|| (title, catalog_key));
             }
             None => {
+                if state.title_rules.is_bundle_or_set(&item.title) {
+                    continue;
+                }
                 let key = suggestion_key_for_item(&item);
                 suggestion_items.entry(key).or_insert(item);
             }
@@ -133,6 +136,11 @@ pub async fn refresh(state: &AppState) -> AppResult<NewReleaseRefreshResult> {
     if let Ok(n) = repositories::dismiss_suggestions_already_in_catalog(&state.pool).await {
         if n > 0 {
             tracing::info!(dismissed = n, "dismissed duplicate new-release suggestions");
+        }
+    }
+    if let Ok(n) = dismiss_pending_bundles_and_normalized_matches(state).await {
+        if n > 0 {
+            tracing::info!(dismissed = n, "dismissed bundle or normalized-title suggestions");
         }
     }
 
@@ -239,6 +247,9 @@ async fn upsert_suggestions(
 ) -> AppResult<i64> {
     let mut suggested = 0i64;
     for (key, item) in suggestion_items {
+        if state.title_rules.is_bundle_or_set(&item.title) {
+            continue;
+        }
         let external = group::volume_external_id(item);
         if repositories::series_id_for_aladin_item_id(&state.pool, &external)
             .await?
@@ -279,6 +290,25 @@ async fn upsert_suggestions(
         suggested += 1;
     }
     Ok(suggested)
+}
+
+/// Pending rows already stored under a slightly different title, and bundle products.
+async fn dismiss_pending_bundles_and_normalized_matches(state: &AppState) -> AppResult<u64> {
+    let pending = repositories::list_new_release_suggestions(&state.pool, Some("pending")).await?;
+    let mut dismissed = 0u64;
+    for item in pending {
+        let normalized = state.title_rules.normalize_series_title(&item.title);
+        let known = !normalized.is_empty()
+            && repositories::find_series_by_normalized_title(&state.pool, &normalized)
+                .await?
+                .is_some();
+        if !known && !state.title_rules.is_bundle_or_set(&item.title) {
+            continue;
+        }
+        repositories::set_new_release_suggestion_status(&state.pool, item.id, "dismissed").await?;
+        dismissed += 1;
+    }
+    Ok(dismissed)
 }
 
 async fn refresh_matched(

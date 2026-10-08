@@ -195,8 +195,6 @@ pub struct CompiledArc {
 
 #[derive(Debug)]
 struct CompiledOverride {
-    #[allow(dead_code)]
-    id: String,
     match_title_regex: Option<Regex>,
     match_contains: Vec<String>,
     canonical_title: Option<String>,
@@ -371,7 +369,6 @@ impl TitleRules {
         let mut series_overrides = Vec::with_capacity(raw.series_overrides.len());
         for ov in raw.series_overrides {
             series_overrides.push(CompiledOverride {
-                id: ov.id.clone(),
                 match_title_regex: ov
                     .match_title_regex
                     .as_deref()
@@ -505,12 +502,12 @@ impl TitleRules {
             .replace('，', ",")
             .replace('Ｓ', "S")
             .replace('ｓ', "s")
-            .replace('`', "")
-            .replace('"', "")
-            .replace('\u{201c}', "")
-            .replace('\u{201d}', "")
-            .replace('\u{2018}', "")
-            .replace('\u{2019}', "");
+            .replace('\u{201c}', "\"")
+            .replace('\u{201d}', "\"")
+            .replace('\u{2018}', "'")
+            .replace('\u{2019}', "'")
+            .replace('\u{ff02}', "\"")
+            .replace('\u{ff07}', "'");
         result = Regex::new(r"\s+")
             .unwrap()
             .replace_all(&result, " ")
@@ -552,7 +549,7 @@ impl TitleRules {
             .trim()
             .to_string();
         result
-            .trim_end_matches(['-', ',', ' ', '"', '\'', '”', '“', '`'])
+            .trim_end_matches(['-', ',', ' '])
             .trim()
             .to_string()
     }
@@ -625,6 +622,7 @@ impl TitleRules {
             .to_string();
 
         result = protect_numeric_ratios(&result);
+        result = strip_bundle_decorations(&result);
 
         for re in &self.volume_strip_patterns {
             let next = re.replace(&result, "").trim().to_string();
@@ -972,6 +970,21 @@ fn hyphen_subvolume_in_title(title: &str, major: i64, minor: u8) -> bool {
         || title.contains(&spaced)
         || title.contains(&format!("{major}–{minor}"))
         || title.contains(&format!("{major}—{minor}"))
+}
+
+fn strip_bundle_decorations(title: &str) -> String {
+    let mut result = title.trim().to_string();
+    result = Regex::new(r"(?i)^\s*[\[［]\s*(?:세트|묶음|합본)\s*[\]］]\s*")
+        .unwrap()
+        .replace(&result, "")
+        .trim()
+        .to_string();
+    result = Regex::new(r"(?i)\s*[\(（]\s*총\s*\d+\s*권\s*/\s*(?:미)?완결\s*[\)）]\s*$")
+        .unwrap()
+        .replace(&result, "")
+        .trim()
+        .to_string();
+    result
 }
 
 fn protect_numeric_ratios(title: &str) -> String {

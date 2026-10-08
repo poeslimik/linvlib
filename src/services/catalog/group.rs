@@ -57,28 +57,114 @@ pub struct CatalogVolume {
     pub stored_item_id: Option<String>,
 }
 
+fn category_parts(cat: &str) -> Vec<&str> {
+    cat.split(['>', '-'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// Yes24 files both comics and light novels under `만화/라이트노벨`.
+/// That shelf name alone is not a comic or light-novel verdict.
+fn is_mixed_shelf(part: &str) -> bool {
+    let compact: String = part.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("만화") && compact.contains("라이트")
+}
+
+fn is_ln_part(part: &str) -> bool {
+    if is_mixed_shelf(part) {
+        return false;
+    }
+    let compact: String = part.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("라이트노벨")
+}
+
+fn is_comic_part(part: &str) -> bool {
+    if is_mixed_shelf(part) {
+        return false;
+    }
+    part.contains("만화") || part.contains("코믹")
+}
+
+fn title_marks_comic(title: &str) -> bool {
+    let title = title.trim();
+    title.contains("[만화]")
+        || title.contains("[코믹]")
+        || title.contains("(만화)")
+        || title.contains("(코믹)")
+        || title.starts_with("코믹 ")
+        || title.starts_with("만화 ")
+}
+
+/// Juvenile shelves. Checked on category segments so an LN imprint cannot keep a picture book.
+const JUVENILE_MARKERS: &[&str] = &[
+    "유아",
+    "어린이",
+    "아동",
+    "그림책",
+    "동화",
+    "키즈",
+    "보드북",
+    "사운드북",
+    "학습만화",
+    "초등",
+];
+
+fn category_is_juvenile(cat: &str) -> bool {
+    category_parts(cat)
+        .iter()
+        .any(|part| JUVENILE_MARKERS.iter().any(|marker| part.contains(marker)))
+}
+
+fn title_marks_juvenile(title: &str) -> bool {
+    let title = title.trim();
+    title.contains("[어린이]")
+        || title.contains("[유아]")
+        || title.contains("[아동]")
+        || title.contains("[동화]")
+        || title.contains("(어린이)")
+        || title.contains("(유아)")
+        || title.contains("(아동)")
+        || title.contains("(동화)")
+        || title.starts_with("어린이 ")
+        || title.starts_with("유아 ")
+}
+
 impl CatalogVolume {
     fn is_light_novel(&self) -> bool {
         self.category_name
             .as_deref()
-            .map(|name| name.contains("라이트 노벨") || name.contains("라이트노벨"))
+            .map(|name| category_parts(name).iter().any(|part| is_ln_part(part)))
             .unwrap_or(false)
     }
 
-    fn looks_like_comic(&self) -> bool {
-        let cat = self.category_name.as_deref().unwrap_or("");
-        let title = self.title.as_str();
-        cat.contains("만화")
-            || cat.contains("코믹")
-            || title.contains("[만화]")
-            || title.contains("[코믹]")
-            || title.contains("(만화)")
-            || title.contains("(코믹)")
+    /// Comic leaf, or the mixed shelf with no light-novel leaf under it.
+    fn category_is_comic(&self) -> bool {
+        let Some(cat) = self.category_name.as_deref() else {
+            return false;
+        };
+        let parts = category_parts(cat);
+        if parts.iter().any(|part| is_comic_part(part)) {
+            return true;
+        }
+        parts.iter().any(|part| is_mixed_shelf(part)) && !parts.iter().any(|part| is_ln_part(part))
     }
 
-    /// True for LN candidates: LN imprint or a light-novel/genre label.
+    /// True for LN candidates: a light-novel leaf, an LN imprint, or a genre label.
+    /// `만화/라이트노벨` is only the parent shelf, so it does not reject a `라이트노벨` leaf.
+    /// Juvenile categories are rejected even when the publisher is an LN imprint.
     pub(crate) fn is_catalog_candidate(&self) -> bool {
-        if self.looks_like_comic() {
+        if title_marks_comic(&self.title) || title_marks_juvenile(&self.title) {
+            return false;
+        }
+        if self
+            .category_name
+            .as_deref()
+            .is_some_and(category_is_juvenile)
+        {
+            return false;
+        }
+        if self.category_is_comic() {
             return false;
         }
         if self.is_light_novel() {
@@ -91,7 +177,7 @@ impl CatalogVolume {
             return true;
         }
         let cat = self.category_name.as_deref().unwrap_or("");
-        cat.contains("라이트") || cat.contains("장르소설")
+        cat.contains("장르소설")
     }
 }
 
@@ -109,7 +195,63 @@ pub fn group_by_series(items: Vec<CatalogVolume>) -> Vec<GroupedSeries> {
     group_by_series_with(items, default_rules())
 }
 
+fn is_ebook(item: &CatalogVolume) -> bool {
+    if let Some(cat) = item.category_name.as_deref() {
+        let compact: String = cat.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.to_ascii_lowercase().contains("ebook") || cat.contains("전자책") {
+            return true;
+        }
+    }
+    let title = item.title.as_str();
+    title.contains("[전자책]")
+        || title.contains("(전자책)")
+        || title.contains("[eBook]")
+        || title.contains("(eBook)")
+}
+
+fn ebook_covered_by_paper(ebook: &CatalogVolume, papers: &[&CatalogVolume]) -> bool {
+    if papers.is_empty() {
+        return false;
+    }
+    if let Some(key) = volume_identity_key(&ebook.title) {
+        return papers
+            .iter()
+            .any(|paper| volume_identity_key(&paper.title) == Some(key));
+    }
+    let series = normalize_series_title(&ebook.title);
+    !series.is_empty()
+        && papers
+            .iter()
+            .any(|paper| normalize_series_title(&paper.title) == series)
+}
+
+/// Ebooks whose paper edition is in `items`. An ebook with no volume number matches
+/// a paper volume of the same series name (Yes24 often omits `1` on the ebook).
+pub(crate) fn ebooks_covered_by_paper(items: &[CatalogVolume]) -> Vec<CatalogVolume> {
+    let papers: Vec<&CatalogVolume> = items.iter().filter(|item| !is_ebook(item)).collect();
+    items
+        .iter()
+        .filter(|item| is_ebook(item) && ebook_covered_by_paper(item, &papers))
+        .cloned()
+        .collect()
+}
+
+fn without_ebooks_covered_by_paper(items: Vec<CatalogVolume>) -> Vec<CatalogVolume> {
+    let covered: HashSet<String> = ebooks_covered_by_paper(&items)
+        .iter()
+        .map(volume_external_id)
+        .collect();
+    if covered.is_empty() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| !covered.contains(&volume_external_id(item)))
+        .collect()
+}
+
 pub fn group_by_series_with(items: Vec<CatalogVolume>, title_rules: &TitleRules) -> Vec<GroupedSeries> {
+    let items = without_ebooks_covered_by_paper(items);
     let mut map: HashMap<String, GroupedSeries> = HashMap::new();
 
     for item in items
@@ -505,6 +647,53 @@ pub(crate) async fn collapse_duplicate_volumes_by_identity(
     Ok(())
 }
 
+/// Drop an ebook row already stored when a paper volume of the same work is in the series.
+pub(crate) async fn remove_stored_ebooks_covered_by_paper(
+    state: &AppState,
+    series_id: Uuid,
+    covered: &[CatalogVolume],
+) -> AppResult<()> {
+    if covered.is_empty() {
+        return Ok(());
+    }
+    let volumes = repositories::list_volumes(&state.pool, series_id, "asc").await?;
+    let mut removed = false;
+    for ebook in covered {
+        let Some(stored) =
+            repositories::find_volume_by_aladin_item_id(&state.pool, &volume_external_id(ebook))
+                .await?
+        else {
+            continue;
+        };
+        if stored.series_id != series_id {
+            continue;
+        }
+        let keep = volumes
+            .iter()
+            .filter(|vol| vol.id != stored.id && paper_title_covers(&ebook.title, &vol.title))
+            .min_by_key(|vol| (extract_volume_parts(&vol.title).is_none(), vol.volume_number));
+        if let Some(keep) = keep {
+            repositories::merge_and_delete_volume(&state.pool, series_id, keep.id, stored.id)
+                .await?;
+        } else {
+            repositories::delete_volume(&state.pool, stored.id, series_id).await?;
+        }
+        removed = true;
+    }
+    if removed {
+        repositories::refresh_series_publish_dates(&state.pool, series_id).await?;
+    }
+    Ok(())
+}
+
+fn paper_title_covers(ebook_title: &str, paper_title: &str) -> bool {
+    if let Some(key) = volume_identity_key(ebook_title) {
+        return volume_identity_key(paper_title) == Some(key);
+    }
+    let series = normalize_series_title(ebook_title);
+    !series.is_empty() && normalize_series_title(paper_title) == series
+}
+
 fn unnumbered_title_key(title: &str) -> String {
     clean_volume_title(title).to_lowercase()
 }
@@ -733,6 +922,9 @@ mod tests {
         assert!(is_bundle_or_set(
             "29세 독신은 이세계에서 자유롭게 살고…… 싶었다. (총10권/완결)"
         ));
+        assert!(is_bundle_or_set(
+            "[묶음] Re : 제로부터 시작하는 이세계 생활 (총43권/미완결)"
+        ));
         assert!(!is_bundle_or_set(
             "29세 독신은 이세계에서 자유롭게 살고…… 싶었다. 10 (완결)"
         ));
@@ -785,6 +977,94 @@ mod tests {
     }
 
     #[test]
+    fn catalog_candidate_keeps_yes24_light_novel_under_comic_shelf() {
+        let mut novel = item("이세계 식당 1", 6);
+        novel.category_name = Some("국내도서-만화/라이트노벨-라이트노벨".into());
+        novel.publisher = "디앤씨미디어(D&C미디어)".into();
+        assert!(novel.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_rejects_yes24_comic_on_mixed_shelf() {
+        let mut comic = item("코믹 이세계 식당 1", 7);
+        comic.category_name = Some("국내도서-만화/라이트노벨".into());
+        comic.publisher = "디앤씨미디어(D&C미디어)".into();
+        assert!(!comic.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_rejects_juvenile_even_from_ln_imprint() {
+        let mut picture = item("구름빵", 8);
+        picture.category_name = Some("국내도서-어린이-그림책".into());
+        picture.publisher = "서울문화사".into();
+        assert!(!picture.is_catalog_candidate());
+
+        let mut fairy = item("유아 동화 1", 9);
+        fairy.category_name = Some("국내도서-유아-동화".into());
+        fairy.publisher = "소미미디어".into();
+        assert!(!fairy.is_catalog_candidate());
+
+        let mut tagged = item("[어린이] 마법 학교 1", 10);
+        tagged.category_name = Some("국내도서".into());
+        tagged.publisher = "시프트노벨".into();
+        assert!(!tagged.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_keeps_ln_from_broad_publisher() {
+        let mut novel = item("어떤 라노베 2", 11);
+        novel.category_name = Some("국내도서-만화/라이트노벨-라이트노벨".into());
+        novel.publisher = "서울문화사".into();
+        assert!(novel.is_catalog_candidate());
+    }
+
+    #[test]
+    fn catalog_candidate_rejects_juvenile_genre_shelf() {
+        let mut kids = item("초등 판타지 1", 12);
+        kids.category_name = Some("국내도서-어린이-장르소설".into());
+        kids.publisher = "인사이트".into();
+        assert!(!kids.is_catalog_candidate());
+    }
+
+    #[test]
+    fn drops_unnumbered_ebook_when_paper_volume_exists() {
+        let mut paper = item("마녀에게 목줄은 채울 수 없다 1", 1);
+        paper.category_name = Some("국내도서-만화/라이트노벨-라이트노벨".into());
+        paper.stored_item_id = Some("isbn:paper".into());
+        let mut ebook = item("마녀에게 목줄은 채울 수 없다", 2);
+        ebook.category_name = Some("ebook-라이트노벨".into());
+        ebook.stored_item_id = Some("isbn:ebook".into());
+        let groups = group_by_series(vec![paper, ebook]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].items.len(), 1);
+        assert_eq!(
+            groups[0].items[0].stored_item_id.as_deref(),
+            Some("isbn:paper")
+        );
+    }
+
+    #[test]
+    fn keeps_ebook_volume_that_has_no_paper_edition() {
+        let mut paper = item("마녀에게 목줄은 채울 수 없다 1", 1);
+        paper.category_name = Some("국내도서-만화/라이트노벨-라이트노벨".into());
+        let mut ebook = item("마녀에게 목줄은 채울 수 없다 2", 2);
+        ebook.category_name = Some("ebook-라이트노벨".into());
+        let groups = group_by_series(vec![paper, ebook]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].items.len(), 2);
+    }
+
+    #[test]
+    fn keeps_ebook_when_it_is_the_only_edition() {
+        let mut ebook = item("어떤 라노베 1", 1);
+        ebook.category_name = Some("전자책>소설".into());
+        ebook.publisher = "시프트노벨".into();
+        let groups = group_by_series(vec![ebook]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].items.len(), 1);
+    }
+
+    #[test]
     fn normalizes_label_suffix_titles() {
         assert_eq!(
             normalize_series_title("마녀와 용병 5 - S Novel+"),
@@ -795,6 +1075,32 @@ mod tests {
             "마녀와 용병"
         );
         assert_eq!(normalize_series_title("데스마치 3권"), "데스마치");
+        assert_eq!(
+            normalize_series_title(
+                "VTuber인데 방송 끄는 걸 깜빡했더니 전설이 되어있었다 10권 (완결)"
+            ),
+            "VTuber인데 방송 끄는 걸 깜빡했더니 전설이 되어있었다"
+        );
+        assert_eq!(
+            normalize_series_title("전생했더니 슬라임이었던 건에 대하여 23권 (완결)"),
+            "전생했더니 슬라임이었던 건에 대하여"
+        );
+        assert_eq!(
+            normalize_series_title("쌍둥이 둘 다 ‘여자 친구’ 삼아줄래? 4"),
+            "쌍둥이 둘 다 '여자 친구' 삼아줄래?"
+        );
+        assert_eq!(
+            normalize_series_title("쌍둥이 둘 다 '여자 친구' 삼아줄래?"),
+            "쌍둥이 둘 다 '여자 친구' 삼아줄래?"
+        );
+        assert_eq!(
+            normalize_series_title("[세트] 전생했더니 슬라임이었던 건에 대하여 (총25권/완결)"),
+            "전생했더니 슬라임이었던 건에 대하여"
+        );
+        assert_eq!(
+            normalize_series_title("[묶음] Re : 제로부터 시작하는 이세계 생활 (총43권/미완결)"),
+            "Re : 제로부터 시작하는 이세계 생활"
+        );
         assert_eq!(
             normalize_series_title("무직전생 스페셜북 - Premium Extreme Novel"),
             "무직전생 스페셜북"

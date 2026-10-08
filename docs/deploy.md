@@ -320,7 +320,7 @@ sudo systemctl stop linvlib   # 바이너리 잠김/권한 이슈 완화
 | `config/title_rules.toml` | 해당 파일            | 재시작                         |
 | `.env`                    | `.env`           | 재시작                         |
 | DB 스키마(마이그레이션)            | 바이너리 (마이그레이션 내장) | 재시작 — DB 파일은 백업 후 유지        |
-| DB 파일 교체 | Deploy GUI의 로컬 `.db` 업로드 | 원격 백업 후 `linvlib.db` 교체. 재시작 시 남은 마이그레이션이 적용됨 |
+| DB 파일 교체 | Deploy GUI의 로컬 `.db` 업로드 | 로컬 파일명과 관계없이 원격 백업 후 `linvlib.db`로 교체. 재시작 시 남은 마이그레이션이 적용됨 |
 
 
 `migrations/`·소스·`target/` 전체는 서버에 올릴 필요 없습니다.

@@ -147,18 +147,20 @@ pub async fn import_series(
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(group::volume_external_id(item)));
 
+    let covered_ebooks = group::ebooks_covered_by_paper(&items);
     let groups = group::group_by_series_with(items, state.title_rules.as_ref());
     let group = group::select_group(&groups, &series_key, &search_query)
         .cloned()
         .ok_or_else(|| AppError::NotFound("series not found in yes24".into()))?;
 
-    persist_group(state, &series_key, group).await
+    persist_group(state, &series_key, group, &covered_ebooks).await
 }
 
 async fn persist_group(
     state: &AppState,
     series_key: &str,
     group: GroupedSeries,
+    covered_ebooks: &[group::CatalogVolume],
 ) -> AppResult<ImportResponse> {
     let mut dates: Vec<_> = group
         .items
@@ -265,6 +267,7 @@ async fn persist_group(
 
     group::drop_bundle_volumes(state, series.id).await?;
     group::collapse_duplicate_volumes_by_identity(state, series.id).await?;
+    group::remove_stored_ebooks_covered_by_paper(state, series.id, covered_ebooks).await?;
     group::reconcile_volume_numbers_from_titles(state, series.id).await?;
     repositories::refresh_series_publish_dates(&state.pool, series.id).await?;
     repositories::touch_series_refreshed(&state.pool, series.id).await?;

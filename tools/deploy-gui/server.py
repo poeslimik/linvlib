@@ -207,6 +207,22 @@ def do_backup_now() -> int:
     )
 
 
+def as_linvlib_db(src: Path) -> tuple[Path, Path | None]:
+    """Return a file named linvlib.db.
+
+    Windows scp keeps the source basename and ignores a different remote
+    filename, so the uploaded file must already be called linvlib.db.
+    The second value is a temp directory to delete afterwards, if one was made.
+    """
+    if src.name == "linvlib.db":
+        return src, None
+    dest_dir = UPLOAD_DIR / f"rename-{time.time_ns()}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "linvlib.db"
+    shutil.copyfile(src, dest)
+    return dest, dest_dir
+
+
 def do_upload_db(local_path: str, backup_first: bool, restart: bool) -> int:
     """Replace remote linvlib.db with a local SQLite file."""
     src = Path(local_path)
@@ -224,37 +240,44 @@ def do_upload_db(local_path: str, backup_first: bool, restart: bool) -> int:
     remote_dir = CFG["remote_dir"]
     target = f"{CFG['ssh_user']}@{CFG['ssh_host']}"
     service = CFG["service_name"]
+    upload_src, temp_dir = as_linvlib_db(src)
+    if temp_dir is not None:
+        log(f"rename {src.name} → linvlib.db")
 
-    if backup_first:
-        log("remote backup before replace…")
-        if do_backup_now() != 0:
-            log("backup failed — aborting db upload")
-            return 1
+    try:
+        if backup_first:
+            log("remote backup before replace…")
+            if do_backup_now() != 0:
+                log("backup failed — aborting db upload")
+                return 1
 
-    log(f"stop {service}")
-    if remote(f"sudo systemctl stop {service}") != 0:
-        log("warn: stop failed (continuing)")
+        log(f"stop {service}")
+        if remote(f"sudo systemctl stop {service}") != 0:
+            log("warn: stop failed (continuing)")
 
-    # Drop WAL/SHM so the replaced main db is authoritative.
-    remote(f"rm -f {remote_dir}/linvlib.db-wal {remote_dir}/linvlib.db-shm")
+        # Drop WAL/SHM so the replaced main db is authoritative.
+        remote(f"rm -f {remote_dir}/linvlib.db-wal {remote_dir}/linvlib.db-shm")
 
-    log(f"upload {src.name} ({size} bytes) → {remote_dir}/linvlib.db")
-    code = run(scp_base() + [str(src), f"{target}:{remote_dir}/linvlib.db"])
-    if code != 0:
-        log("upload failed — attempting restart anyway")
+        log(f"upload {src.name} ({size} bytes) → {remote_dir}/linvlib.db")
+        code = run(scp_base() + [str(upload_src), f"{target}:{remote_dir}/linvlib.db"])
+        if code != 0:
+            log("upload failed — attempting restart anyway")
+            if restart:
+                do_restart()
+            return code
+
+        remote(f"ls -lh {remote_dir}/linvlib.db")
+
         if restart:
-            do_restart()
-        return code
-
-    remote(f"ls -lh {remote_dir}/linvlib.db")
-
-    if restart:
-        log(f"start {service}")
-        if do_restart() != 0:
-            return 1
-    else:
-        log("restart skipped — start the service manually when ready")
-    return 0
+            log(f"start {service}")
+            if do_restart() != 0:
+                return 1
+        else:
+            log("restart skipped — start the service manually when ready")
+        return 0
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def remote_capture(cmd: str, timeout: int = 45) -> tuple[int, str, str]:
@@ -430,8 +453,13 @@ def run_job(action: str, payload: dict) -> None:
             # Clean staged upload after job (best-effort).
             try:
                 p = Path(local_path)
-                if p.is_file() and UPLOAD_DIR in p.resolve().parents:
-                    p.unlink(missing_ok=True)
+                resolved = p.resolve()
+                if UPLOAD_DIR in resolved.parents:
+                    if p.is_file():
+                        p.unlink(missing_ok=True)
+                    parent = resolved.parent
+                    if parent != UPLOAD_DIR and parent.parent == UPLOAD_DIR:
+                        parent.rmdir()
             except OSError:
                 pass
         elif action == "ssh_test":
@@ -551,7 +579,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <section class="panel">
       <h2>데이터베이스 업로드</h2>
-      <p class="meta" style="margin-top:0">로컬 <code>.db</code>로 서버 <code>linvlib.db</code>를 교체합니다. 기본으로 원격 백업 → stop → 업로드 → WAL 정리 → 재시작 순입니다.</p>
+      <p class="meta" style="margin-top:0">로컬 <code>.db</code>를 원래 이름과 관계없이 서버 <code>linvlib.db</code>로 바꿔 교체합니다. 기본으로 원격 백업 → stop → 업로드 → WAL 정리 → 재시작 순입니다.</p>
       <div class="row" style="align-items:center; margin:0.75rem 0;">
         <input type="file" id="db-file" accept=".db,application/x-sqlite3,application/octet-stream" />
       </div>
@@ -646,7 +674,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         alert(".db 파일만 업로드할 수 있습니다.");
         return;
       }
-      if (!confirm(`${file.name} (${Math.round(file.size/1024)} KB)를 서버 DB로 교체할까요?`)) return;
+      if (!confirm(`${file.name} (${Math.round(file.size/1024)} KB)를 서버 linvlib.db로 바꿔 교체할까요?`)) return;
       const fd = new FormData();
       fd.append("file", file, file.name);
       fd.append("backup_first", document.getElementById("db-backup").checked ? "1" : "0");
@@ -831,9 +859,12 @@ def save_multipart_db_upload(headers, body: bytes) -> tuple[Path | None, dict, s
         return None, opts, "not a SQLite database file"
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^\w.\-]+", "_", filename)
-    dest = UPLOAD_DIR / f"{int(time.time())}_{safe}"
+    # Always stage as linvlib.db. scp on Windows uploads the source basename.
+    dest_dir = UPLOAD_DIR / str(time.time_ns())
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "linvlib.db"
     dest.write_bytes(file_bytes)
+    opts["source_name"] = filename
     return dest, opts, None
 
 
@@ -950,7 +981,11 @@ class Handler(BaseHTTPRequestHandler):
             if err or saved is None:
                 self._json(400, {"error": err or "upload failed"})
                 return
-            log(f"staged db upload: {saved} ({saved.stat().st_size} bytes)")
+            source_name = opts.get("source_name") or saved.name
+            log(
+                f"staged db upload: {source_name} → linvlib.db "
+                f"({saved.stat().st_size} bytes)"
+            )
             payload = {
                 "local_path": str(saved),
                 "backup_first": opts.get("backup_first", True),

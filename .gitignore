@@ -17,6 +17,10 @@ linvlib.db-*
 tools/deploy-gui/config.json
 tools/deploy-gui/_uploads/
 
+# Python
+**/__pycache__/
+*.pyc
+
 # OS / editor
 .DS_Store
 Thumbs.db

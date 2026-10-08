@@ -144,7 +144,9 @@ KST 날짜 헬퍼: `services/quota.rs` (`seoul_today` 등).
 - `016` 작품 묶음  
 - `017` 신간 추천  
 - `018` 수동 시리즈 출처 표기 (`source_label` / `source_url`)  
-- `019`–`020` 튜토리얼 완료 플래그 추가 후 제거 (히스토리만 유지)  
+- `019`–`020` 튜토리얼 완료 플래그 추가 후 제거 (히스토리만 유지)
+- `021` 예스24 일일 호출 카운터 `yes24_api_usage` (`CREATE TABLE IF NOT EXISTS`. 이미 적용된 SQL은 수정하지 않음)
+- `022` 키 없이 만들어진 `yes24_api_usage`에 `usage_date` 기본키를 맞춤  
 
 ## 백그라운드 작업
 
