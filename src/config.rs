@@ -7,7 +7,8 @@ pub struct Config {
     pub database_url: String,
     pub jwt_secret: String,
     pub jwt_expiry_hours: i64,
-    pub aladin_ttb_key: String,
+    /// Yes24 Open API key (`X-Api-Key`).
+    pub yes24_api_key: String,
     pub bind_addr: String,
     /// Soft-coded title/series rules (default: `config/title_rules.toml`).
     pub title_rules_path: String,
@@ -15,10 +16,6 @@ pub struct Config {
     pub admin_email: String,
     /// Public base URL for verification links (e.g. https://linvlib.example.com).
     pub app_base_url: String,
-    /// Daily Aladin API query budget (hard cap ~5000).
-    pub aladin_daily_quota: i64,
-    /// Soft stop threshold; leave headroom under the hard cap.
-    pub aladin_soft_quota: i64,
     /// Directory for SQLite snapshots (relative to process CWD unless absolute).
     pub backup_dir: String,
     /// How many days of backup files to keep.
@@ -53,8 +50,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(168),
-            aladin_ttb_key: env::var("ALADIN_TTB_KEY")
-                .map_err(|_| AppError::Internal("ALADIN_TTB_KEY is not set".into()))?,
+            yes24_api_key: env::var("YES24_API_KEY")
+                .map_err(|_| AppError::Internal("YES24_API_KEY is not set".into()))?
+                .trim()
+                .to_string(),
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
             title_rules_path: env::var("TITLE_RULES_PATH")
                 .unwrap_or_else(|_| "config/title_rules.toml".to_string()),
@@ -66,14 +65,6 @@ impl Config {
                 .unwrap_or_else(|_| "http://localhost:3000".to_string())
                 .trim_end_matches('/')
                 .to_string(),
-            aladin_daily_quota: env::var("ALADIN_DAILY_QUOTA")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5000),
-            aladin_soft_quota: env::var("ALADIN_SOFT_QUOTA")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(4800),
             backup_dir: env::var("BACKUP_DIR").unwrap_or_else(|_| "backups".to_string()),
             backup_retain_days: env::var("BACKUP_RETAIN_DAYS")
                 .ok()

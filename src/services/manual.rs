@@ -1,5 +1,5 @@
-//! Manual series registration (non-Aladin).
-//! Uses synthetic IDs: `manual:{uuid}` / `manual-vol:{uuid}`.
+//! Operator-entered series (not fetched from Yes24).
+//! Synthetic ids: `manual:{uuid}` / `manual-vol:{uuid}`.
 
 use chrono::{NaiveDate, TimeZone, Utc};
 use uuid::Uuid;

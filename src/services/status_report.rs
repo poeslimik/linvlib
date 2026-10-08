@@ -1,6 +1,6 @@
 use std::time::Duration as StdDuration;
 
-use chrono::{NaiveDate, Timelike};
+use chrono::NaiveDate;
 use serde_json::json;
 use tokio::time::sleep;
 
@@ -12,66 +12,70 @@ use crate::{
 };
 
 const LAST_STATUS_REPORT_DATE_KEY: &str = "last_status_report_date";
-/// Daily Discord status report wall-clock time (KST).
-const RUN_HOUR: u32 = 8;
-const RUN_MINUTE: u32 = 0;
+const SEND_ATTEMPTS: u32 = 3;
+const SEND_RETRY_DELAY: StdDuration = StdDuration::from_secs(30);
 
-/// Poll every minute and post a Discord status embed once per KST day at/after 08:00.
-///
-/// No-op when `DISCORD_STATUS_WEBHOOK_URL` is unset. Last successful send date is
-/// persisted so daytime restarts do not re-send; catch-up runs if the process was
-/// down at 08:00 but comes back the same day.
-pub fn spawn_daily_status_report(state: AppState) {
+/// Log whether the daily report is armed. The report itself runs after the
+/// scheduled new-release refresh, not on its own clock.
+pub fn log_startup(state: &AppState) {
     if state.config.discord_status_webhook_url.is_none() {
         tracing::info!("Discord status report disabled (DISCORD_STATUS_WEBHOOK_URL unset)");
         return;
     }
+    tracing::info!("Discord status report armed (after scheduled new-release refresh)");
+}
 
-    tokio::spawn(async move {
-        let mut last_run_date = load_last_run_date(&state).await;
+/// Post today's Discord status once the scheduled new-release refresh has finished.
+///
+/// No-op when `DISCORD_STATUS_WEBHOOK_URL` is unset or today's report already
+/// succeeded. A few retries cover a transient webhook failure; the success date
+/// is stored so a later restart does not send again.
+pub async fn send_after_scheduled_refresh(state: &AppState) {
+    if state.config.discord_status_webhook_url.is_none() {
+        tracing::info!("Discord status report skipped (DISCORD_STATUS_WEBHOOK_URL unset)");
+        return;
+    }
+
+    let today = quota::seoul_today_date();
+    if load_last_run_date(state).await == Some(today) {
         tracing::info!(
-            today = %quota::seoul_today(),
-            server_time = %quota::seoul_now_display(),
-            last_status_report_date = ?last_run_date.map(|d| d.to_string()),
-            run_at = %format!("{RUN_HOUR:02}:{RUN_MINUTE:02} KST"),
-            "Discord daily status report started (checks every 60s)"
+            today = %today,
+            "Discord status report already sent today; skipping"
         );
+        return;
+    }
 
-        loop {
-            sleep(StdDuration::from_secs(60)).await;
+    tracing::info!(
+        today = %today,
+        server_time = %quota::seoul_now_display(),
+        "sending Discord status report after new-release refresh"
+    );
 
-            let (today, past_run_time) = seoul_today_and_past_run_time();
-            if !past_run_time || last_run_date == Some(today) {
-                continue;
+    for attempt in 1..=SEND_ATTEMPTS {
+        match send_status_report(state).await {
+            Ok(()) => {
+                let _ = repositories::set_app_meta(
+                    &state.pool,
+                    LAST_STATUS_REPORT_DATE_KEY,
+                    &today.format("%Y-%m-%d").to_string(),
+                )
+                .await;
+                tracing::info!("Discord status report sent");
+                return;
             }
-
-            tracing::info!(
-                today = %today,
-                server_time = %quota::seoul_now_display(),
-                "sending Discord daily status report"
-            );
-
-            match send_status_report(&state).await {
-                Ok(()) => {
-                    last_run_date = Some(today);
-                    let _ = repositories::set_app_meta(
-                        &state.pool,
-                        LAST_STATUS_REPORT_DATE_KEY,
-                        &today.format("%Y-%m-%d").to_string(),
-                    )
-                    .await;
-                    tracing::info!("Discord daily status report sent");
-                }
-                Err(err) => {
-                    tracing::error!(
-                        error = %err,
-                        server_time = %quota::seoul_now_display(),
-                        "Discord daily status report failed; will retry"
-                    );
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    attempt,
+                    server_time = %quota::seoul_now_display(),
+                    "Discord status report failed"
+                );
+                if attempt < SEND_ATTEMPTS {
+                    sleep(SEND_RETRY_DELAY).await;
                 }
             }
         }
-    });
+    }
 }
 
 pub async fn send_status_report(state: &AppState) -> AppResult<()> {
@@ -81,7 +85,6 @@ pub async fn send_status_report(state: &AppState) -> AppResult<()> {
         .as_deref()
         .ok_or_else(|| AppError::Internal("DISCORD_STATUS_WEBHOOK_URL unset".into()))?;
 
-    let (quota_date, quota_used, quota_soft, _quota_hard) = quota::usage_snapshot(state).await?;
     let pending = repositories::list_catalog_requests_admin(&state.pool, Some("pending"))
         .await?
         .len() as i64;
@@ -103,11 +106,9 @@ pub async fn send_status_report(state: &AppState) -> AppResult<()> {
     )
     .await?
     .unwrap_or_else(|| "—".into());
+    let yes24_q = crate::services::yes24_limit::status_today(state).await?;
 
-    let remaining = (quota_soft - quota_used).max(0);
-    let color = if remaining <= 200 {
-        0xc45c48_u32 // red-ish when quota nearly exhausted
-    } else if pending > 0 {
+    let color = if pending > 0 {
         0xd4893a_u32 // amber when requests waiting
     } else {
         0x1f7a74_u32 // teal OK
@@ -121,17 +122,6 @@ pub async fn send_status_report(state: &AppState) -> AppResult<()> {
             "color": color,
             "fields": [
                 {
-                    "name": "알라딘 쿼터",
-                    "value": format!(
-                        "{used} / {soft} 사용 · 잔여 **{remaining}**\n(날짜 `{date}`)",
-                        used = quota_used,
-                        soft = quota_soft,
-                        remaining = remaining,
-                        date = quota_date
-                    ),
-                    "inline": false
-                },
-                {
                     "name": "갱신",
                     "value": format!(
                         "마지막: `{at}`\n스케줄 일자: `{sched}`\n메모: {note}",
@@ -140,6 +130,18 @@ pub async fn send_status_report(state: &AppState) -> AppResult<()> {
                         note = truncate(&last_refresh_note, 180)
                     ),
                     "inline": false
+                },
+                {
+                    "name": "예스24 API",
+                    "value": format!(
+                        "오늘({date}) **{used}** / {soft} (한도 {hard})\n초당 제한: {rps}회",
+                        date = yes24_q.usage_date,
+                        used = yes24_q.used,
+                        soft = yes24_q.soft_limit,
+                        hard = yes24_q.hard_limit,
+                        rps = crate::services::yes24_limit::RPS_LIMIT
+                    ),
+                    "inline": true
                 },
                 {
                     "name": "백업",
@@ -184,13 +186,6 @@ pub async fn send_status_report(state: &AppState) -> AppResult<()> {
     }
 
     Ok(())
-}
-
-fn seoul_today_and_past_run_time() -> (NaiveDate, bool) {
-    let now = chrono::Utc::now()
-        .with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).expect("kst"));
-    let past = now.hour() > RUN_HOUR || (now.hour() == RUN_HOUR && now.minute() >= RUN_MINUTE);
-    (now.date_naive(), past)
 }
 
 async fn load_last_run_date(state: &AppState) -> Option<NaiveDate> {

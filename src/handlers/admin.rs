@@ -13,7 +13,7 @@ use crate::{
     error::{AppError, AppResult},
     models::{AdminStatusResponse, BatchSearchAliasRequest, BatchSearchBundleRequest, UserResponse},
     repositories,
-    services::{aladin, backup, new_releases, quota, search_keys},
+    services::{backup, catalog, new_releases, quota, search_keys, yes24_limit},
     state::AppState,
 };
 
@@ -21,8 +21,6 @@ pub async fn status(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
 ) -> AppResult<Json<AdminStatusResponse>> {
-    let (quota_date, quota_used, quota_soft, quota_hard) = quota::usage_snapshot(&state).await?;
-    let recent = repositories::list_recent_aladin_quota(&state.pool, 7).await?;
     let pending = repositories::list_catalog_requests_admin(&state.pool, Some("pending"))
         .await?
         .len() as i64;
@@ -30,17 +28,9 @@ pub async fn status(
     let users = repositories::list_users(&state.pool).await?;
     let manual_series_count = repositories::count_manual_series(&state.pool).await?;
     let backups = backup::list_backups(&state).await.unwrap_or_default();
+    let yes24_q = yes24_limit::status_today(&state).await?;
     Ok(Json(AdminStatusResponse {
-        quota_date: quota_date.clone(),
-        quota_used,
-        quota_soft,
-        quota_hard,
-        quota_remaining: (quota_soft - quota_used).max(0),
         server_time_kst: quota::seoul_now_display(),
-        recent_quota: recent
-            .into_iter()
-            .map(|(date, used)| crate::models::AdminQuotaDay { date, used })
-            .collect(),
         last_refresh_at: repositories::get_app_meta(&state.pool, "last_refresh_at").await?,
         last_refresh_note: repositories::get_app_meta(&state.pool, "last_refresh_note").await?,
         refresh_running: new_releases::is_running_persisted(&state).await,
@@ -56,6 +46,10 @@ pub async fn status(
         pending_suggestions,
         user_count: users.len() as i64,
         manual_series_count,
+        yes24_quota_used: yes24_q.used,
+        yes24_quota_soft_limit: yes24_q.soft_limit,
+        yes24_quota_hard_limit: yes24_q.hard_limit,
+        yes24_quota_date: yes24_q.usage_date,
     }))
 }
 
@@ -106,7 +100,8 @@ pub async fn trigger_refresh(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
 ) -> AppResult<Json<crate::models::RefreshStartResponse>> {
-    let response = new_releases::start_background(state).await?;
+    let response =
+        new_releases::start_background(state, new_releases::RefreshOrigin::Manual).await?;
     Ok(Json(response))
 }
 
@@ -138,7 +133,7 @@ pub async fn import_new_release_suggestion(
     if suggestion.status == "imported" {
         return Err(AppError::BadRequest("already imported".into()));
     }
-    let response = aladin::import_series(
+    let response = catalog::import_series(
         &state,
         suggestion.aladin_series_id.clone(),
         if suggestion.aladin_series_id.is_some() {

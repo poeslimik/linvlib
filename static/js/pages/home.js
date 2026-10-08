@@ -26,7 +26,7 @@ export async function renderHome(root) {
           <button type="button" class="btn btn--primary" data-mode="login">로그인</button>
           <button type="button" class="btn btn--secondary" data-mode="register">회원가입</button>
         </div>
-        <p class="landing__attr">도서 정보 출처: <a href="https://www.aladin.co.kr/" target="_blank" rel="noopener noreferrer">알라딘 인터넷서점</a></p>
+        <p class="landing__attr">도서 정보 출처: <a href="https://www.yes24.com/" target="_blank" rel="noopener noreferrer">예스24</a></p>
         <p class="landing__legal">
           <a href="/terms" data-link>이용약관</a>
           <a href="/privacy" data-link>개인정보처리방침</a>

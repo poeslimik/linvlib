@@ -1,16 +1,10 @@
-//! Domain services.
+//! Domain services. HTTP stays in `handlers`, SQL in `repositories`.
 //!
-//! | Module | Responsibility |
-//! |--------|----------------|
-//! | [`aladin`] | Aladin HTTP client, search, import |
-//! | [`new_releases`] | ItemList-based refresh + suggestions |
-//! | [`search_keys`] | Search aliases / bundles |
-//! | [`catalog_requests`] | User catalog requests |
-//! | [`scheduler`] | Daily 23:30 refresh trigger |
-//! | [`backup`] | Midnight DB snapshots |
-//! | [`status_report`] | Discord daily status |
+//! Book search, import, and new-release refresh go through [`catalog`] (Yes24).
+//! DB columns `aladin_*` are historical names for external ids
+//! (`title:`, `isbn:`, `yes24:`, `manual:`).
 
-pub mod aladin;
+pub mod catalog;
 pub mod backup;
 pub mod catalog_edit;
 pub mod catalog_requests;
@@ -27,3 +21,4 @@ pub mod status_report;
 pub mod tierlist;
 pub mod title_rules;
 pub mod tour;
+pub mod yes24_limit;

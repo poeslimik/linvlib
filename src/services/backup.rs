@@ -31,19 +31,6 @@ pub fn seoul_now() -> DateTime<FixedOffset> {
     Utc::now().with_timezone(&seoul_tz())
 }
 
-/// Resolve SQLite file path from `DATABASE_URL` (`sqlite:…` / `sqlite://…`).
-#[allow(dead_code)]
-pub fn database_file_path(database_url: &str) -> AppResult<PathBuf> {
-    let raw = database_url
-        .strip_prefix("sqlite:")
-        .ok_or_else(|| AppError::Internal("DATABASE_URL must start with sqlite:".into()))?;
-    let path = raw.trim_start_matches("//");
-    if path.is_empty() {
-        return Err(AppError::Internal("DATABASE_URL has empty path".into()));
-    }
-    Ok(PathBuf::from(path))
-}
-
 pub fn backup_dir(state: &AppState) -> PathBuf {
     PathBuf::from(&state.config.backup_dir)
 }

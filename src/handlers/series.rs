@@ -10,7 +10,7 @@ use crate::{
     error::AppResult,
     models::{ImportRequest, ManualSeriesRequest, SaveRatingRequest, SaveReadsRequest},
     repositories,
-    services::{aladin, catalog_edit, manual, series},
+    services::{catalog, catalog_edit, manual, series},
     state::AppState,
 };
 
@@ -133,7 +133,7 @@ pub async fn import_search(
     AuthUser(_user): AuthUser,
     Query(query): Query<ImportSearchQuery>,
 ) -> AppResult<Json<Vec<crate::models::ImportSearchResult>>> {
-    let results = aladin::import_search(&state, &query.q).await?;
+    let results = catalog::import_search(&state, &query.q).await?;
     Ok(Json(results))
 }
 
@@ -146,7 +146,7 @@ pub async fn import_series(
     if let Some(id) = body.seed_item_id {
         seeds.insert(0, id);
     }
-    let response = aladin::import_series(
+    let response = catalog::import_series(
         &state,
         body.aladin_series_id,
         seeds,

@@ -36,7 +36,7 @@ async function request(path, options = {}) {
       const gateway = res.status === 502 || res.status === 503 || res.status === 504;
       throw new ApiError(
         gateway
-          ? "서버 또는 알라딘 연결이 잠시 실패했습니다. 잠시 후 다시 시도해 주세요."
+          ? "서버 또는 카탈로그 API 연결이 잠시 실패했습니다. 잠시 후 다시 시도해 주세요."
           : `서버 응답이 올바르지 않습니다 (${res.status || "network"}).`,
         res.status || 502,
       );

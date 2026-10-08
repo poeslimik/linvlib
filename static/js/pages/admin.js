@@ -131,13 +131,12 @@ export async function renderAdmin(root) {
       <section class="panel" aria-labelledby="admin-status-title">
         <div class="admin-section-head">
           <h2 id="admin-status-title">상태</h2>
-          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" ${status.refresh_running ? "disabled" : ""} title="알라딘 신간 목록을 백그라운드로 가져와 카탈로그를 갱신합니다">
+          <button type="button" class="btn btn--ghost btn--sm" id="admin-refresh" ${status.refresh_running ? "disabled" : ""} title="예스24 신간 목록을 백그라운드로 가져와 카탈로그를 갱신합니다">
             ${status.refresh_running ? "갱신 중…" : "지금 신간 갱신"}
           </button>
         </div>
         <dl class="detail-facts">
           <div><dt>서버 시각</dt><dd>${escapeHtml(status.server_time_kst || "—")}</dd></div>
-          <div><dt>오늘 쿼터 (${escapeHtml(status.quota_date)})</dt><dd>사용 ${status.quota_used} · 남음 ${status.quota_remaining ?? Math.max(0, status.quota_soft - status.quota_used)} / 소프트 ${status.quota_soft} (한도 ${status.quota_hard})</dd></div>
           <div><dt>대기 요청</dt><dd>${status.pending_requests}</dd></div>
           <div><dt>신간 추천</dt><dd>${status.pending_suggestions ?? 0}</dd></div>
           <div><dt>직접 등록 작품</dt><dd>${status.manual_series_count}</dd></div>
@@ -147,16 +146,10 @@ export async function renderAdmin(root) {
           <div><dt>스케줄 갱신일</dt><dd>${escapeHtml(status.last_scheduled_refresh_date || "—")}</dd></div>
           <div><dt>최근 백업</dt><dd>${escapeHtml(status.last_backup_at || "—")}</dd></div>
           <div><dt>보관 백업</dt><dd>${status.backup_count ?? 0}개 · ${status.backup_retain_days ?? 14}일</dd></div>
+          <div><dt>예스24 API (오늘)</dt><dd>${status.yes24_quota_used ?? 0} / ${status.yes24_quota_soft_limit ?? 19500} <span class="muted">(한도 ${status.yes24_quota_hard_limit ?? 20000} · ${escapeHtml(status.yes24_quota_date || "—")})</span></dd></div>
         </dl>
         <p class="muted">${escapeHtml(status.last_refresh_note || "")}</p>
-        ${
-          Array.isArray(status.recent_quota) && status.recent_quota.length
-            ? `<p class="muted">최근 사용: ${status.recent_quota
-                .map((d) => `${escapeHtml(d.date)} ${d.used}`)
-                .join(" · ")}</p>`
-            : ""
-        }
-        <p class="muted">쿼터·자동 갱신은 KST 기준입니다. 매일 08:00 Discord 상태 보고(웹훅 설정 시), 23:30 알라딘 신간 목록으로 갱신·추천, 자정 DB 백업(최대 ${status.backup_retain_days ?? 14}일 보관)이 돌아갑니다.</p>
+        <p class="muted">자동 갱신은 KST 기준입니다. 매일 23:30 예스24 신간으로 갱신·추천한 뒤 Discord 상태 보고(웹훅 설정 시)를 보내고, 자정에 DB를 백업합니다(최대 ${status.backup_retain_days ?? 14}일 보관). 예스24 호출은 초당 10회·일 소프트 ${status.yes24_quota_soft_limit ?? 19500}회로 제한합니다.</p>
       </section>`;
   }
 
@@ -164,7 +157,7 @@ export async function renderAdmin(root) {
     return `
       <section class="panel" aria-labelledby="admin-suggestions-title">
         <h2 id="admin-suggestions-title">신간 추천</h2>
-        <p class="muted">알라딘 신간 목록에 있으나 카탈로그에 없는 작품입니다. 가져오기 또는 숨길 수 있습니다.</p>
+        <p class="muted">예스24 신간 목록에 있으나 카탈로그에 없는 작품입니다. 가져오기 또는 숨길 수 있습니다.</p>
         ${
           suggestions.length
             ? `<ul class="request-list">${suggestions
@@ -214,7 +207,7 @@ export async function renderAdmin(root) {
   }
 
   function renderPendingActions(r) {
-    const showAladinSearch = r.request_type !== "edit";
+    const showCatalogSearch = r.request_type !== "edit";
     return `
       <div class="request-item__actions">
         ${
@@ -240,8 +233,8 @@ export async function renderAdmin(root) {
           )
           .join("")}
         ${
-          showAladinSearch
-            ? `<a class="btn btn--ghost btn--sm" href="/import?q=${encodeURIComponent(r.title || "")}" data-link>알라딘 검색</a>`
+          showCatalogSearch
+            ? `<a class="btn btn--ghost btn--sm" href="/import?q=${encodeURIComponent(r.title || "")}" data-link>카탈로그 검색</a>`
             : ""
         }
       </div>`;
@@ -426,7 +419,7 @@ export async function renderAdmin(root) {
           <div class="page__head--row">
             <h1>관리</h1>
             <div class="admin-head-actions">
-              <a class="btn btn--primary btn--sm" href="/import" data-link>알라딘 추가</a>
+              <a class="btn btn--primary btn--sm" href="/import" data-link>카탈로그 추가</a>
               <a class="btn btn--ghost btn--sm" href="/import?tab=manual" data-link>직접 등록</a>
               <a class="btn btn--ghost btn--sm" href="/import?tab=aliases" data-link>검색</a>
             </div>
@@ -478,7 +471,7 @@ export async function renderAdmin(root) {
     });
 
     root.querySelector("#admin-refresh")?.addEventListener("click", async () => {
-      if (!confirm("알라딘 신간 목록을 가져와 카탈로그 작품을 갱신할까요?\n목록에 없는 신간은 추천 탭에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)")) return;
+      if (!confirm("예스24 신간 목록을 가져와 카탈로그 작품을 갱신할까요?\n목록에 없는 신간은 추천 탭에 추가됩니다.\n(백그라운드로 실행되며 완료까지 수 분 걸릴 수 있습니다)")) return;
       const btn = root.querySelector("#admin-refresh");
       btn.disabled = true;
       btn.textContent = "갱신 중…";

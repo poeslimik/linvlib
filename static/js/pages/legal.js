@@ -1,7 +1,7 @@
 import { isLoggedIn } from "../auth.js";
 
 const CONTACT_EMAIL = ""; // 공개 문의 메일 (비우면 문구만 표시)
-const LEGAL_VERSION = "2026-07-25";
+const LEGAL_VERSION = "2026-09-24";
 
 function contactHtml() {
   if (CONTACT_EMAIL) {
@@ -41,7 +41,7 @@ export async function renderTerms(root) {
     </section>
     <section>
       <h2>2. 서비스 내용</h2>
-      <p>서비스는 이용자가 작품·권 단위로 읽음 여부를 기록하고, 평가를 남기며, 티어리스트를 구성할 수 있도록 돕습니다. 도서 메타데이터는 알라딘 인터넷서점 Open API 등 외부 출처를 통해 제공될 수 있으며, 출처는 서비스 화면에 표시됩니다.</p>
+      <p>서비스는 이용자가 작품·권 단위로 읽음 여부를 기록하고, 평가를 남기며, 티어리스트를 구성할 수 있도록 돕습니다. 도서 메타데이터는 예스24 Open API 등 외부 출처를 통해 제공될 수 있으며, 출처는 서비스 화면에 표시됩니다.</p>
     </section>
     <section>
       <h2>3. 계정</h2>
@@ -56,7 +56,7 @@ export async function renderTerms(root) {
       <ul>
         <li>법령 또는 타인의 권리를 침해하는 행위</li>
         <li>자동화 수단으로 과도하게 API·서버에 부하를 주는 행위</li>
-        <li>서비스 또는 외부 데이터 제공자(알라딘 등)를 사칭하거나 오인하게 하는 행위</li>
+        <li>서비스 또는 외부 데이터 제공자(예스24 등)를 사칭하거나 오인하게 하는 행위</li>
         <li>음란·혐오·불법 콘텐츠를 유포하는 행위</li>
       </ul>
     </section>
@@ -100,7 +100,7 @@ export async function renderPrivacy(root) {
     <section>
       <h2>4. 제3자 제공·처리 위탁</h2>
       <ul>
-        <li><strong>알라딘 인터넷서점 Open API</strong> — 도서 검색·메타데이터 조회 (이용자 이메일을 알라딘에 전달하지 않음)</li>
+        <li><strong>예스24 Open API</strong> — 도서 검색·메타데이터·신간 조회 (이용자 이메일을 예스24에 전달하지 않음)</li>
         <li><strong>이메일 발송(SMTP)</strong> — 가입·인증 메일 전송을 위해 이메일 주소가 메일 서버로 전달됨</li>
       </ul>
       <p>법령에 근거하거나 이용자 동의가 있는 경우를 제외하고 개인정보를 제3자에게 판매·제공하지 않습니다.</p>
